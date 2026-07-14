@@ -1,0 +1,23 @@
+{
+  "feishu": {
+    "appId": "cli_xxx",
+    "appSecret": "replace-me",
+    "domain": "feishu",
+    "flushIntervalMs": 200,
+    "streamingTransport": "auto",
+    "showThinking": false,
+    "printStrategy": "delay",
+    "printStep": 4,
+    "panelExpanded": false,
+    "streamingPanelExpanded": false,
+    "maxToolSteps": 20,
+    "maxThinkingRounds": 20,
+    "maxAnswerElementChars": 30000,
+    "accessPolicy": "allowlist",
+    "allowedChatIds": ["oc_xxx"],
+    "allowedOpenIds": ["ou_xxx"],
+    "requireMentionInGroup": true,
+    "clarifyTimeoutSec": 300,
+    "monitoringEnabled": true
+  }
+}

@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build / cache
+dist/
+build/
+out/
+*.tsbuildinfo
+.cache/
+
+# Test / coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Vitest / temp
+.temp/
+.tmp/

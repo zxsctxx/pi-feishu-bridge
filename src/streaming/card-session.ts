@@ -1,0 +1,88 @@
+import { FlushScheduler } from "./flush-scheduler.js";
+import { ToolTracker } from "./tool-tracker.js";
+import { UpdateQueue } from "./update-queue.js";
+
+export type CardPhase = "creating" | "streaming" | "completing" | "completed" | "creation_failed" | "failed" | "aborted" | "terminated";
+export type TerminalReason = "normal" | "llm_error" | "user_abort" | "replaced" | "message_unavailable" | "card_creation_failed" | "session_shutdown";
+export interface FooterMetrics { model?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheRead?: number; cacheWrite?: number; cost?: number; contextTokens?: number | null; contextWindow?: number; contextPercent?: number | null; apiCalls: number; stopReason?: string; }
+
+const TRANSITIONS: Record<CardPhase, CardPhase[]> = {
+  creating: ["streaming", "completing", "creation_failed", "aborted", "terminated", "failed"],
+  streaming: ["completing", "failed", "aborted", "terminated"],
+  completing: ["completed", "failed", "aborted", "terminated"],
+  completed: [], creation_failed: [], failed: [], aborted: [], terminated: [],
+};
+
+export class CardSession {
+  phase: CardPhase = "creating";
+  terminalReason: TerminalReason | null = null;
+  terminalSource = "";
+  cardId: string | null = null;
+  cardMessageId: string | null = null;
+  fallbackCardMessageId: string | null = null;
+  fallbackPatched = false;
+  fallbackReason = "";
+  answer = "";
+  deliveredAnswerLength = 0;
+  currentThinking = "";
+  thinkingRounds: string[] = [];
+  panelEvents: Array<{ type: "thinking"; index: number } | { type: "tool"; toolCallId: string }> = [];
+  errorMessage = "";
+  panelDirty = true;
+  answerDirty = false;
+  sequence = 0;
+  epoch = 0;
+  readonly tools = new ToolTracker();
+  readonly flush: FlushScheduler;
+  readonly updates = new UpdateQueue();
+  readonly createdAt = Date.now();
+  completedAt: number | null = null;
+  finalized = false;
+  currentCardStart = 0;
+  rolloverCardIds: string[] = [];
+  rolloverMessageIds: string[] = [];
+  nativeUpdatesStopped = false;
+  nativeErrorCode: number | undefined;
+  nativeErrorKind = "";
+  streamingAlreadyClosed = false;
+  elementsInitialized = false;
+  footer: FooterMetrics = { apiCalls: 0 };
+
+  constructor(readonly requestId: string, readonly chatId: string, readonly userMsgId: string, flushIntervalMs: number) {
+    this.flush = new FlushScheduler(flushIntervalMs);
+  }
+
+  get terminal(): boolean { return TRANSITIONS[this.phase].length === 0; }
+  nextSequence(): number { return ++this.sequence; }
+
+  transition(next: CardPhase, reason?: TerminalReason, source = ""): boolean {
+    if (this.phase === next || !TRANSITIONS[this.phase].includes(next)) return false;
+    this.phase = next;
+    if (TRANSITIONS[next].length === 0) {
+      this.terminalReason = reason ?? this.terminalReason;
+      this.terminalSource = source;
+      this.completedAt = Date.now();
+    }
+    return true;
+  }
+
+  resolveCreationFailure(next: "completed" | "failed" | "aborted" | "terminated", reason: TerminalReason, source: string): boolean {
+    if (this.phase !== "creation_failed") return false;
+    this.phase = next; this.terminalReason = reason; this.terminalSource = source; this.completedAt = Date.now();
+    return true;
+  }
+
+  beginStreaming(): void { if (this.phase === "creating") this.transition("streaming"); }
+  appendText(delta: string): void { if ((!this.terminal || this.phase === "creation_failed") && delta) { this.finishThinking(); this.beginStreaming(); this.answer += delta; this.answerDirty = true; } }
+  appendThinking(delta: string): void { if ((!this.terminal || this.phase === "creation_failed") && delta) { this.beginStreaming(); this.currentThinking += delta; this.panelDirty = true; } }
+  recordTool(toolCallId: string): void {
+    if (this.panelEvents.some((event) => event.type === "tool" && event.toolCallId === toolCallId)) return;
+    this.finishThinking(); this.beginStreaming(); this.panelEvents.push({ type: "tool", toolCallId }); this.panelDirty = true;
+  }
+  finishThinking(): void {
+    if (!this.currentThinking) return;
+    this.thinkingRounds.push(this.currentThinking);
+    this.panelEvents.push({ type: "thinking", index: this.thinkingRounds.length - 1 });
+    this.currentThinking = ""; this.panelDirty = true;
+  }
+}

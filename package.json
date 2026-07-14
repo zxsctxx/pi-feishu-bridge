@@ -1,0 +1,57 @@
+{
+  "name": "pi-feishu-bridge",
+  "version": "2.0.12",
+  "description": "Pi-Feishu Bridge: Feishu WebSocket channel with CardKit and IM PATCH streaming transports",
+  "type": "module",
+  "main": "src/index.ts",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "feishu",
+    "lark",
+    "bot-api",
+    "chat-bridge",
+    "websocket"
+  ],
+  "files": [
+    "src",
+    "docs",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.64.0",
+    "typebox": "^1.1.39"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "axios": "^1.16.0",
+    "form-data": "^4.0.6",
+    "protobufjs": "^7.6.3"
+  }
+}
