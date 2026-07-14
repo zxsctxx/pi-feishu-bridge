@@ -13,6 +13,14 @@ export interface CardRenderOptions { showThinking: boolean; panelExpanded: boole
 const truncate = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}…` : text;
 function toolLine(step: ToolStep): string { const icon = step.status === "running" ? "⏳" : step.status === "error" ? "❌" : "✅"; const elapsed = step.elapsedMs ? ` · ${(step.elapsedMs / 1000).toFixed(1)}s` : ""; return `${icon} **${step.name}**${elapsed}${step.detail ? `\n${truncate(step.detail, 40)}` : ""}${step.output ? `\n${truncate(step.output, 40)}` : ""}`; }
 
+/** Agent 保留英文；轮次/工具/耗时用中文单位。 */
+export function buildPanelTitle(session: CardSession, toolCount: number, terminal = false): string {
+  const rounds = session.thinkingRounds.length + (session.currentThinking ? 1 : 0);
+  const end = terminal ? (session.completedAt ?? Date.now()) : Date.now();
+  const elapsed = ((end - session.createdAt) / 1000).toFixed(1);
+  return `Agent loop · ${rounds} 轮 · ${toolCount} 工具 · ${elapsed}s`;
+}
+
 export function buildPanelElement(session: CardSession, options: CardRenderOptions, terminal = false): Record<string, unknown> {
   const lines: string[] = [];
   const thinkingStart = Math.max(0, session.thinkingRounds.length - options.maxThinkingRounds);
@@ -28,7 +36,14 @@ export function buildPanelElement(session: CardSession, options: CardRenderOptio
     }
   }
   if (session.currentThinking) lines.push(options.showThinking ? `💭 推理 ${session.thinkingRounds.length + 1}\n${truncate(session.currentThinking, 3500)}` : `💭 推理 ${session.thinkingRounds.length + 1}`);
-  return { tag: "collapsible_panel", element_id: PANEL_ELEMENT_ID, expanded: terminal ? options.panelExpanded : (options.streamingPanelExpanded ?? false), header: { title: { tag: "plain_text", content: `Agent loop · ${session.thinkingRounds.length + (session.currentThinking ? 1 : 0)} rounds · ${tools.hidden + tools.steps.length} tools · ${((Date.now() - session.createdAt) / 1000).toFixed(1)}s` } }, elements: [{ tag: "markdown", element_id: PANEL_CONTENT_ELEMENT_ID, content: lines.join("\n\n") || "正在处理…" }] };
+  const toolCount = tools.hidden + tools.steps.length;
+  return {
+    tag: "collapsible_panel",
+    element_id: PANEL_ELEMENT_ID,
+    expanded: terminal ? options.panelExpanded : (options.streamingPanelExpanded ?? false),
+    header: { title: { tag: "plain_text", content: buildPanelTitle(session, toolCount, terminal) } },
+    elements: [{ tag: "markdown", element_id: PANEL_CONTENT_ELEMENT_ID, content: lines.join("\n\n") || "正在处理…" }],
+  };
 }
 
 export function panelContent(panel: Record<string, unknown>): string {

@@ -3,7 +3,7 @@ import type { CardKitError } from "../feishu/errors.js";
 import { normalizeMarkdown, splitMarkdown } from "../cardkit/markdown.js";
 import { trimPanelToTagLimit } from "../cardkit/limits.js";
 import { CardSession, type TerminalReason } from "./card-session.js";
-import { ANSWER_ELEMENT_ID, FOOTER_ELEMENT_ID, LOADING_ELEMENT_ID, LOADING_HINT_ELEMENT_ID, PANEL_CONTENT_ELEMENT_ID, PANEL_ELEMENT_ID, addElementsAction, buildCreatingCard, buildFallbackCard, buildFallbackText, buildFooter, buildPanelElement, deleteElementsAction, panelContent, partialUpdateElementAction, type CardRenderOptions } from "./card-renderer.js";
+import { ANSWER_ELEMENT_ID, FOOTER_ELEMENT_ID, LOADING_ELEMENT_ID, LOADING_HINT_ELEMENT_ID, PANEL_ELEMENT_ID, addElementsAction, buildCreatingCard, buildFallbackCard, buildFallbackText, buildFooter, buildPanelElement, deleteElementsAction, partialUpdateElementAction, type CardRenderOptions } from "./card-renderer.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
 
 export interface StreamingManagerOptions extends CardRenderOptions { flushIntervalMs: number; maxAnswerElementChars: number; }
@@ -44,12 +44,33 @@ export class StreamingCardManager {
 
   private accepts(s: CardSession): boolean { return !s.terminal || s.phase === "creation_failed"; }
   onTextDelta(delta: string): void { const s = this.active; if (!s || !this.accepts(s)) return; s.appendText(delta); this.schedule(s); }
-  onThinkingDelta(delta: string): void { const s = this.active; if (!s || !this.accepts(s)) return; s.appendThinking(delta); this.schedule(s); }
-  onToolStart(id: string, name: string, args: unknown): void { const s = this.active; if (!s || !this.accepts(s)) return; s.recordTool(id); s.tools.start(id, name, args); s.panelDirty = true; this.schedule(s); }
-  onToolUpdate(id: string, result: unknown): void { const s = this.active; if (!s || !this.accepts(s)) return; if (s.tools.update(id, result)) s.recordTool(id); s.panelDirty = true; this.schedule(s); }
-  onToolEnd(id: string, result: unknown, error: boolean): void { const s = this.active; if (!s || !this.accepts(s)) return; if (s.tools.end(id, result, error)) s.recordTool(id); s.panelDirty = true; this.schedule(s); }
+  onThinkingDelta(delta: string): void {
+    const s = this.active; if (!s || !this.accepts(s)) return;
+    const startedRound = !s.currentThinking;
+    s.appendThinking(delta);
+    // 新一轮推理开始时立刻刷新标题轮次；流式中仍走节流
+    if (startedRound) this.flushImmediate(s);
+    else this.schedule(s);
+  }
+  onToolStart(id: string, name: string, args: unknown): void {
+    const s = this.active; if (!s || !this.accepts(s)) return;
+    s.recordTool(id); s.tools.start(id, name, args); s.panelDirty = true; this.flushImmediate(s);
+  }
+  onToolUpdate(id: string, result: unknown): void {
+    const s = this.active; if (!s || !this.accepts(s)) return;
+    if (s.tools.update(id, result)) s.recordTool(id);
+    s.panelDirty = true; this.schedule(s);
+  }
+  onToolEnd(id: string, result: unknown, error: boolean): void {
+    const s = this.active; if (!s || !this.accepts(s)) return;
+    if (s.tools.end(id, result, error)) s.recordTool(id);
+    s.panelDirty = true; this.flushImmediate(s);
+  }
   recordError(message: string): void { const s = this.active; if (!s || !this.accepts(s)) return; s.errorMessage = message; }
-  onAgentEnd(): void { this.active?.finishThinking(); }
+  onAgentEnd(): void {
+    const s = this.active; if (!s || !this.accepts(s)) return;
+    s.finishThinking(); s.panelDirty = true; this.flushImmediate(s);
+  }
 
   async settle(): Promise<CardSession | null> {
     const s = this.active; if (!s) return null; s.finishThinking();
@@ -72,6 +93,8 @@ export class StreamingCardManager {
   async terminate(message = "会话已关闭"): Promise<CardSession | null> { const s = this.active; if (!s || (s.terminal && s.phase !== "creation_failed")) return s; s.errorMessage = message; if (s.phase === "creation_failed") s.resolveCreationFailure("terminated", "session_shutdown", "session_shutdown_fallback"); else s.transition("terminated", "session_shutdown", "session_shutdown"); s.flush.complete(); await s.updates.drain(); await this.finalize(s); return s; }
   release(): void { this.active = null; }
   private schedule(s: CardSession): void { s.flush.schedule(() => this.flushSession(s)); }
+  /** 关键事件（新轮推理 / 工具开始结束）立即刷新，避免标题卡住 */
+  private flushImmediate(s: CardSession): void { void s.flush.flushNow(() => this.flushSession(s)); }
 
   private async flushSession(s: CardSession): Promise<void> {
     if (!s.cardId) {
@@ -120,7 +143,13 @@ export class StreamingCardManager {
       try { await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, terminalActions, s.nextSequence())); }
       catch (error) {
         if ((error as CardKitError)?.kind !== "element_limit") throw error;
-        const minimalPanel = { tag: "collapsible_panel", element_id: PANEL_ELEMENT_ID, expanded: false, header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪" } }, elements: [{ tag: "markdown", content: "早期步骤因卡片元素限制已折叠。" }] };
+        const minimalPanel = {
+          tag: "collapsible_panel",
+          element_id: PANEL_ELEMENT_ID,
+          expanded: false,
+          header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪" } },
+          elements: [{ tag: "markdown", content: "早期步骤因卡片元素限制已折叠。" }],
+        };
         await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
           partialUpdateElementAction(PANEL_ELEMENT_ID, { header: minimalPanel.header, elements: minimalPanel.elements }),
           addElementsAction([buildFooter(s)], LOADING_ELEMENT_ID),
@@ -165,12 +194,27 @@ export class StreamingCardManager {
   }
 
   private async flushPanel(s: CardSession): Promise<void> {
-    const panel = trimPanelToTagLimit(buildPanelElement(s, this.options), 190);
-    try { await s.updates.enqueue(() => this.cardkit.updateElement(s.cardId!, PANEL_CONTENT_ELEMENT_ID, panelContent(panel), s.nextSequence())); }
-    catch (error) {
+    // 同步刷新标题（轮次/工具数/耗时）与面板内容；仅改 content 时标题不会变
+    const panel = trimPanelToTagLimit(buildPanelElement(s, this.options), 190) as {
+      header?: unknown;
+      elements?: unknown;
+    };
+    try {
+      await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
+        partialUpdateElementAction(PANEL_ELEMENT_ID, { header: panel.header, elements: panel.elements }),
+      ], s.nextSequence()));
+    } catch (error) {
       if ((error as CardKitError)?.kind !== "element_limit") throw error;
-      const minimal = { tag: "collapsible_panel", element_id: PANEL_ELEMENT_ID, expanded: false, header: { title: { tag: "plain_text", content: "Agent loop · 早期步骤已裁剪" } }, elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。" }] };
-      await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [partialUpdateElementAction(PANEL_ELEMENT_ID, { header: minimal.header, elements: minimal.elements })], s.nextSequence()));
+      const minimal = {
+        tag: "collapsible_panel",
+        element_id: PANEL_ELEMENT_ID,
+        expanded: false,
+        header: { title: { tag: "plain_text", content: "Agent loop · 早期步骤已裁剪" } },
+        elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。" }],
+      };
+      await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
+        partialUpdateElementAction(PANEL_ELEMENT_ID, { header: minimal.header, elements: minimal.elements }),
+      ], s.nextSequence()));
     }
   }
 
@@ -185,7 +229,13 @@ export class StreamingCardManager {
       ], s.nextSequence()));
     } catch (error) {
       if ((error as CardKitError)?.kind !== "element_limit") throw error;
-      const minimalPanel = { tag: "collapsible_panel", element_id: PANEL_ELEMENT_ID, expanded: false, header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪" } }, elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。" }] };
+      const minimalPanel = {
+        tag: "collapsible_panel",
+        element_id: PANEL_ELEMENT_ID,
+        expanded: false,
+        header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪" } },
+        elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。" }],
+      };
       await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
         addElementsAction([minimalPanel, answerElement], LOADING_HINT_ELEMENT_ID),
         deleteElementsAction([LOADING_HINT_ELEMENT_ID]),
