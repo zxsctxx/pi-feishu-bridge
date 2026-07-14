@@ -50,24 +50,45 @@ export function buildTerminalStatus(session: CardSession): Record<string, unknow
   return { tag: "markdown", element_id: STATUS_ELEMENT_ID, content: `---\n${status} · ${(((session.completedAt ?? Date.now()) - session.createdAt) / 1000).toFixed(1)}s${error}` };
 }
 
+/** 口径对齐 pi 终端 formatTokens：1.2k / 31k / 1.1M */
 function compactNumber(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "?";
   const absolute = Math.abs(value);
-  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return String(Math.round(value));
+  if (absolute < 1000) return String(Math.round(value));
+  if (absolute < 10_000) return `${(value / 1000).toFixed(1)}k`;
+  if (absolute < 1_000_000) return `${Math.round(value / 1000)}k`;
+  if (absolute < 10_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(value / 1_000_000)}M`;
 }
 
 export function buildFooter(session: CardSession): Record<string, unknown> {
   const f = session.footer;
   const status = session.phase === "completed" ? "已完成" : session.phase === "aborted" ? "已停止" : session.phase === "terminated" ? "已终止" : "失败";
   const duration = (((session.completedAt ?? Date.now()) - session.createdAt) / 1000).toFixed(1);
-  const reasoning = f.reasoningTokens ? ` ${compactNumber(f.reasoningTokens)}` : "";
-  const context = f.contextWindow ? `${compactNumber(f.contextTokens)}/${compactNumber(f.contextWindow)} (${Math.round(f.contextPercent ?? ((f.contextTokens ?? 0) / f.contextWindow * 100))}%)` : "?";
-  const cacheBase = (f.cacheRead ?? 0) + (f.inputTokens ?? 0);
-  const cachePercent = cacheBase > 0 ? Math.round((f.cacheRead ?? 0) / cacheBase * 100) : 0;
+  // 与终端 footer 一致：↑input ↓output RcacheRead WcacheWrite CHhit%
+  const tokenParts: string[] = [];
+  if (f.inputTokens) tokenParts.push(`↑${compactNumber(f.inputTokens)}`);
+  if (f.outputTokens) tokenParts.push(`↓${compactNumber(f.outputTokens)}`);
+  if (f.cacheRead) tokenParts.push(`R${compactNumber(f.cacheRead)}`);
+  if (f.cacheWrite) tokenParts.push(`W${compactNumber(f.cacheWrite)}`);
+  if (typeof f.cacheHitPercent === "number" && (f.cacheRead || f.cacheWrite)) {
+    tokenParts.push(`CH${f.cacheHitPercent.toFixed(1)}%`);
+  }
+  // reasoning 是 output 子集；仅 provider 上报且 >0 时展示（终端无此字段，飞书额外保留）
+  if (typeof f.reasoningTokens === "number" && f.reasoningTokens > 0) {
+    tokenParts.push(`💭 ${compactNumber(f.reasoningTokens)}`);
+  }
+  const tokens = tokenParts.length > 0 ? tokenParts.join(" ") : "↑0 ↓0";
+  const context = f.contextWindow
+    ? `${compactNumber(f.contextTokens)}/${compactNumber(f.contextWindow)} (${Math.round(f.contextPercent ?? ((f.contextTokens ?? 0) / f.contextWindow * 100))}%)`
+    : "?";
   const error = session.errorMessage ? ` · ${truncate(session.errorMessage, 300)}` : "";
-  return { tag: "markdown", element_id: FOOTER_ELEMENT_ID, text_size: "notation", content: `${status} · 耗时 ${duration}s · ${f.model ?? "未知模型"} · API ${f.apiCalls}\n↑ ${compactNumber(f.inputTokens ?? 0)} ↓ ${compactNumber(f.outputTokens ?? 0)}${reasoning} · 上下文 ${context} · 缓存 ${cachePercent}%${error}` };
+  return {
+    tag: "markdown",
+    element_id: FOOTER_ELEMENT_ID,
+    text_size: "notation",
+    content: `${status} · 耗时 ${duration}s · ${f.model ?? "未知模型"} · API ${f.apiCalls}\n${tokens} · 上下文 ${context}${error}`,
+  };
 }
 
 export function buildFallbackText(session: CardSession, options: CardRenderOptions): string {

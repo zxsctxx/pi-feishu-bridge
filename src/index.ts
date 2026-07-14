@@ -528,8 +528,61 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  /** 与终端 footer 一致：遍历 session 全部 assistant usage 累加；pending 用于 message_end 尚未落盘的当前条 */
+  function applySessionFooterUsage(pending?: { usage?: {
+    input?: number; output?: number; reasoning?: number;
+    cacheRead?: number; cacheWrite?: number; cost?: { total?: number };
+  } }): void {
+    const card = streaming?.activeSession;
+    const sm = ctxRef?.sessionManager;
+    if (!card || !sm) return;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let reasoningTokens = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let cost = 0;
+    let cacheHitPercent: number | undefined;
+    const apply = (usage: {
+      input?: number; output?: number; reasoning?: number;
+      cacheRead?: number; cacheWrite?: number; cost?: { total?: number };
+    } | undefined) => {
+      if (!usage) return;
+      const input = usage.input ?? 0;
+      const cr = usage.cacheRead ?? 0;
+      const cw = usage.cacheWrite ?? 0;
+      inputTokens += input;
+      outputTokens += usage.output ?? 0;
+      if (typeof usage.reasoning === "number") reasoningTokens += usage.reasoning;
+      cacheRead += cr;
+      cacheWrite += cw;
+      cost += usage.cost?.total ?? 0;
+      const promptTokens = input + cr + cw;
+      if (promptTokens > 0 && (cr > 0 || cw > 0)) {
+        cacheHitPercent = (cr / promptTokens) * 100;
+      }
+    };
+    for (const entry of sm.getEntries()) {
+      if (entry.type !== "message") continue;
+      const message = entry.message as { role?: string; usage?: Parameters<typeof apply>[0] };
+      if (message.role === "assistant") apply(message.usage);
+    }
+    apply(pending?.usage);
+    card.footer.inputTokens = inputTokens;
+    card.footer.outputTokens = outputTokens;
+    card.footer.reasoningTokens = reasoningTokens > 0 ? reasoningTokens : undefined;
+    card.footer.cacheRead = cacheRead;
+    card.footer.cacheWrite = cacheWrite;
+    card.footer.cost = cost;
+    card.footer.cacheHitPercent = cacheHitPercent;
+  }
+
   pi.on("before_agent_start", () => {
-    const session = streaming?.activeSession; if (session) session.footer = { apiCalls: 0 };
+    const session = streaming?.activeSession;
+    if (!session) return;
+    session.footer.apiCalls = 0;
+    // 本轮开始先刷 session 累计（与终端同口径），apiCalls 仅统计本轮
+    applySessionFooterUsage();
   });
   pi.on("after_provider_response", () => {
     const session = streaming?.activeSession; if (session) session.footer.apiCalls++;
@@ -539,8 +592,9 @@ export default function (pi: ExtensionAPI) {
     const session = streaming?.activeSession; if (!session) return;
     const message = event.message;
     session.footer.model = message.responseModel ?? message.model;
-    session.footer.inputTokens = message.usage.input; session.footer.outputTokens = message.usage.output; session.footer.reasoningTokens = message.usage.reasoning;
-    session.footer.cacheRead = message.usage.cacheRead; session.footer.cacheWrite = message.usage.cacheWrite; session.footer.cost = message.usage.cost.total; session.footer.stopReason = message.stopReason;
+    session.footer.stopReason = message.stopReason;
+    // message_end 时尚未写入 session 文件，把当前条作为 pending 并入累计
+    applySessionFooterUsage({ usage: message.usage });
   });
 
   pi.on("tool_execution_start", (event) => {
@@ -560,6 +614,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async () => {
     const usage = ctxRef?.getContextUsage(); const active = streaming?.activeSession;
+    // 落盘后按 session 全量再刷一次，避免 pending 与 getEntries 边界误差
+    applySessionFooterUsage();
     if (active && usage) { active.footer.contextTokens = usage.tokens; active.footer.contextWindow = usage.contextWindow; active.footer.contextPercent = usage.percent; }
     const session = await streaming?.settle();
     if (!session) { await configReload.afterSettled(async () => { config = loadConfig(); await startFeishuClient(); }); return; }

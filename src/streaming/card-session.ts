@@ -4,7 +4,22 @@ import { UpdateQueue } from "./update-queue.js";
 
 export type CardPhase = "creating" | "streaming" | "completing" | "completed" | "creation_failed" | "failed" | "aborted" | "terminated";
 export type TerminalReason = "normal" | "llm_error" | "user_abort" | "replaced" | "message_unavailable" | "card_creation_failed" | "session_shutdown";
-export interface FooterMetrics { model?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheRead?: number; cacheWrite?: number; cost?: number; contextTokens?: number | null; contextWindow?: number; contextPercent?: number | null; apiCalls: number; stopReason?: string; }
+export interface FooterMetrics {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** 最近一次请求的 cache hit rate（%），口径对齐终端 footer CH */
+  cacheHitPercent?: number;
+  cost?: number;
+  contextTokens?: number | null;
+  contextWindow?: number;
+  contextPercent?: number | null;
+  apiCalls: number;
+  stopReason?: string;
+}
 
 const TRANSITIONS: Record<CardPhase, CardPhase[]> = {
   creating: ["streaming", "completing", "creation_failed", "aborted", "terminated", "failed"],
