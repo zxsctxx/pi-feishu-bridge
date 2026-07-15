@@ -60,9 +60,16 @@ pi install ./pi-feishu-bridge-2.0.12.tgz
 
 ## 命令
 
-飞书和 Pi 终端支持 `/feishu status`、`monitor`、`monitor reset`、`config`、`config reload`、`doctor`、`help`；飞书还支持 `/stop`、`/queue`、`/compact` 以及旧 `/status`、`/help` 别名。
+飞书和 Pi 终端支持 `/feishu status`、`monitor`、`monitor reset`、`config`、`config reload`、`doctor`、`help`。
 
-远程 `/new` 不会执行 abort/compact，也不会调用 Pi 私有 API。它只提示用户在 Pi TUI 中执行真正的 `/new`。
+飞书还支持：
+
+| 命令 | 作用 |
+|------|------|
+| `/new` | 真正新建 Pi 会话（清空上下文；经内部命令调用 `ctx.newSession`） |
+| `/reload` | 等同终端 `/reload`（热重载扩展/技能/主题等；`/feishu config reload` 仅重载飞书配置） |
+| `/compact` | 压缩上下文 |
+| `/stop` / `/queue` / `/status` / `/help` | 中断、排队、状态、帮助 |
 
 ## LLM 工具
 

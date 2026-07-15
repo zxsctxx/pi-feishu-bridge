@@ -18,10 +18,11 @@
  *   3. Pi settings.json 中的 feishu 字段
  */
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ExtensionCommandContext,
+import {
+  AgentSession,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 import { readFileSync, existsSync } from "node:fs";
@@ -151,7 +152,73 @@ function loadConfig(): FeishuConfig {
 
 // ─── 扩展入口 ───────────────────────────────────────────
 
+/** newSession/reload 会拆掉旧扩展实例；用 globalThis 跨实例投递飞书回执 */
+type PendingFeishuNotify = { chatId: string; text: string; at: number };
+const PENDING_NOTIFY_KEY = "__piFeishuBridgePendingNotify";
+
+function setPendingFeishuNotify(notify: PendingFeishuNotify | null): void {
+  (globalThis as Record<string, unknown>)[PENDING_NOTIFY_KEY] = notify;
+}
+
+function takePendingFeishuNotify(): PendingFeishuNotify | null {
+  const g = globalThis as Record<string, unknown>;
+  const notify = (g[PENDING_NOTIFY_KEY] as PendingFeishuNotify | null | undefined) ?? null;
+  g[PENDING_NOTIFY_KEY] = null;
+  return notify;
+}
+
+/** 内部命令名：仅供飞书斜杠经 sendUserMessage 触发，勿与内置 /new /reload 抢名 */
+const CMD_FEISHU_SESSION_NEW = "feishu-session-new";
+const CMD_FEISHU_RUNTIME_RELOAD = "feishu-runtime-reload";
+const INTERNAL_SESSION_COMMANDS = new Set([CMD_FEISHU_SESSION_NEW, CMD_FEISHU_RUNTIME_RELOAD]);
+
+/**
+ * pi.sendUserMessage 硬编码 expandPromptTemplates:false，不会执行扩展命令。
+ * 对白名单内部命令改走 expandPromptTemplates:true，才能拿到 ExtensionCommandContext
+ *（newSession/reload 只在该上下文可用）。
+ */
+function installInternalCommandPromptPatch(): void {
+  const g = globalThis as Record<string, unknown>;
+  if (g.__piFeishuBridgeCmdPatch) return;
+  const proto = AgentSession.prototype as unknown as {
+    sendUserMessage: (content: unknown, options?: { deliverAs?: string }) => Promise<void>;
+    prompt: (text: string, options?: Record<string, unknown>) => Promise<void>;
+  };
+  const original = proto.sendUserMessage;
+  if (typeof original !== "function" || typeof proto.prompt !== "function") return;
+  proto.sendUserMessage = async function patchedSendUserMessage(
+    this: typeof proto,
+    content: unknown,
+    options?: { deliverAs?: string },
+  ) {
+    let text: string | undefined;
+    if (typeof content === "string") text = content;
+    else if (Array.isArray(content)) {
+      text = content
+        .filter((part: { type?: string; text?: string }) => part?.type === "text" && typeof part.text === "string")
+        .map((part: { text: string }) => part.text)
+        .join("\n");
+    }
+    const trimmed = text?.trim() ?? "";
+    if (trimmed.startsWith("/")) {
+      const space = trimmed.indexOf(" ");
+      const name = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space);
+      if (INTERNAL_SESSION_COMMANDS.has(name)) {
+        await this.prompt(trimmed, {
+          expandPromptTemplates: true,
+          streamingBehavior: options?.deliverAs,
+          source: "extension",
+        });
+        return;
+      }
+    }
+    return original.call(this, content, options);
+  };
+  g.__piFeishuBridgeCmdPatch = true;
+}
+
 export default function (pi: ExtensionAPI) {
+  installInternalCommandPromptPatch();
   let client: FeishuClient | null = null;
   let config: FeishuConfig = loadConfig();
   let ctxRef: ExtensionContext | null = null;
@@ -378,6 +445,20 @@ export default function (pi: ExtensionAPI) {
 
   // ─── 斜杠命令处理 ──────────────────────────────────────
 
+  /** 为 /new /reload 做前置清理：中断流式、清空本聊天队列、abort Agent */
+  async function prepareRemoteSessionControl(chatId: string): Promise<void> {
+    latestChatId = chatId;
+    await clarify?.abort();
+    if (streaming?.activeSession) await streaming.abort("会话控制命令中断当前任务");
+    client?.stopTyping(chatId, false).catch(() => {});
+    const queue = chatQueues.get(chatId);
+    if (queue) {
+      queue.queue = [];
+      queue.processing = false;
+    }
+    if (ctxRef && !ctxRef.isIdle()) ctxRef.abort();
+  }
+
   /**
    * 处理从飞书发来的斜杠命令。
    * 这些命令不会发给 LLM，而是直接在扩展层执行或回复提示。
@@ -411,7 +492,27 @@ export default function (pi: ExtensionAPI) {
         break;
       }
       case "/new": {
-        await client?.sendMessage(chatId, "飞书远程 /new 无法通过 Pi 公开扩展 API 创建真正的新会话。请在 Pi TUI 中执行 /new；如只需压缩上下文，请使用 /compact。", msgId);
+        await prepareRemoteSessionControl(chatId);
+        setPendingFeishuNotify({
+          chatId,
+          text: "已新建会话。先前上下文已清空，可继续对话。",
+          at: Date.now(),
+        });
+        await client?.sendMessage(chatId, "正在新建会话…", msgId);
+        // newSession 仅在命令上下文可用；经 followUp 触发内部命令
+        pi.sendUserMessage(`/${CMD_FEISHU_SESSION_NEW}`, { deliverAs: "followUp" });
+        break;
+      }
+
+      case "/reload": {
+        await prepareRemoteSessionControl(chatId);
+        setPendingFeishuNotify({
+          chatId,
+          text: "已热重载扩展、技能、提示词、主题与上下文文件；飞书连接已恢复。\n（仅重载飞书配置请用 /feishu config reload）",
+          at: Date.now(),
+        });
+        await client?.sendMessage(chatId, "正在热重载…", msgId);
+        pi.sendUserMessage(`/${CMD_FEISHU_RUNTIME_RELOAD}`, { deliverAs: "followUp" });
         break;
       }
 
@@ -458,12 +559,25 @@ export default function (pi: ExtensionAPI) {
       }
 
       case "/compact": {
-        if (ctxRef) {
-          ctxRef.compact();
-          await client?.sendMessage(chatId, "已触发上下文压缩。", msgId);
-        } else {
+        if (!ctxRef) {
           await client?.sendMessage(chatId, "无法执行：会话上下文不可用。", msgId);
+          break;
         }
+        const replyChatId = chatId;
+        const replyMsgId = msgId;
+        ctxRef.compact({
+          onComplete: () => {
+            void client?.sendMessage(replyChatId, "上下文压缩已完成。", replyMsgId);
+          },
+          onError: (error) => {
+            void client?.sendMessage(
+              replyChatId,
+              `上下文压缩失败：${error instanceof Error ? error.message : String(error)}`,
+              replyMsgId,
+            );
+          },
+        });
+        await client?.sendMessage(chatId, "已触发上下文压缩…", msgId);
         break;
       }
 
@@ -486,12 +600,16 @@ export default function (pi: ExtensionAPI) {
       case "/help": {
         const helpText = [
           "可用命令:",
-          "  /new       - 提示在 Pi TUI 中创建真正的新会话",
+          "  /new       - 新建 Pi 会话（清空上下文）",
+          "  /reload    - 热重载扩展/技能/主题等（等同终端 /reload）",
           "  /stop      - 中断当前处理，清空排队",
           "  /queue     - 查看排队状态",
           "  /compact   - 压缩上下文",
           "  /status    - 查看 Pi 状态",
           "  /help      - 显示帮助",
+          "",
+          "飞书扩展:",
+          "  /feishu status | monitor [reset] | config [reload] | doctor | help",
           "",
           "以下命令请在 Pi 终端中执行:",
           "  /model     - 切换模型",
@@ -640,6 +758,60 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_compact", () => { setTimeout(() => flushAllQueues(), 500); });
+
+  // ─── 会话控制命令（供飞书 /new /reload 经 sendUserMessage 触发）──
+
+  pi.registerCommand(CMD_FEISHU_SESSION_NEW, {
+    description: "[内部] 飞书远程新建会话",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      try {
+        if (!ctx.isIdle()) {
+          ctx.abort();
+          await ctx.waitForIdle();
+        }
+        const result = await ctx.newSession();
+        if (result.cancelled) {
+          // 新会话未建立，旧实例仍存活，直接回执
+          const pending = takePendingFeishuNotify();
+          if (pending && client) {
+            await client.sendMessage(pending.chatId, "新建会话已取消（被扩展拦截）。");
+          }
+          ctx.ui.notify("飞书远程 /new 已取消", "warning");
+          return;
+        }
+        // 成功后旧运行时已拆掉；成功文案由新实例 session_start 投递 pending notify
+      } catch (error) {
+        const pending = takePendingFeishuNotify();
+        const detail = error instanceof Error ? error.message : String(error);
+        if (pending && client) {
+          await client.sendMessage(pending.chatId, `新建会话失败：${detail}`);
+        }
+        ctx.ui.notify(`飞书远程 /new 失败: ${detail}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand(CMD_FEISHU_RUNTIME_RELOAD, {
+    description: "[内部] 飞书远程热重载（等同 /reload）",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      try {
+        if (!ctx.isIdle()) {
+          ctx.abort();
+          await ctx.waitForIdle();
+        }
+        // reload 后旧内存状态失效，成功回执交给新实例 session_start
+        await ctx.reload();
+        return;
+      } catch (error) {
+        const pending = takePendingFeishuNotify();
+        const detail = error instanceof Error ? error.message : String(error);
+        if (pending && client) {
+          await client.sendMessage(pending.chatId, `热重载失败：${detail}`);
+        }
+        ctx.ui.notify(`飞书远程 /reload 失败: ${detail}`, "error");
+      }
+    },
+  });
 
   // ─── 注册 /feishu 命令 ────────────────────────────────
 
@@ -946,6 +1118,20 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       if (ctx.hasUI) {
         ctx.ui.notify(`飞书连接失败: ${err}`, "error");
+      }
+    }
+
+    // newSession/reload 后新实例在此投递跨实例回执
+    const pending = takePendingFeishuNotify();
+    if (pending && client && client.getStatus() === "connected") {
+      // 丢弃过旧请求（例如上次未完成的残留）
+      if (Date.now() - pending.at < 120_000) {
+        latestChatId = pending.chatId;
+        try {
+          await client.sendMessage(pending.chatId, pending.text);
+        } catch (err) {
+          console.warn(`[pi-feishu] pending notify failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 
