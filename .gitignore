@@ -41,3 +41,6 @@ Desktop.ini
 # Vitest / temp
 .temp/
 .tmp/
+
+# npm pack artifacts
+*.tgz
