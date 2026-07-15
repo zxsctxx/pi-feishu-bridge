@@ -247,14 +247,13 @@ export function buildTerminalStatus(session: CardSession): Record<string, unknow
 }
 
 /** 口径对齐 pi 终端 formatTokens：1.2k / 31k / 1.1M */
+/** 展示用压缩数字：1.5K / 122.2K / 1.1M（仅格式，不改取值） */
 function compactNumber(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "?";
   const absolute = Math.abs(value);
   if (absolute < 1000) return String(Math.round(value));
-  if (absolute < 10_000) return `${(value / 1000).toFixed(1)}k`;
-  if (absolute < 1_000_000) return `${Math.round(value / 1000)}k`;
-  if (absolute < 10_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  return `${Math.round(value / 1_000_000)}M`;
+  if (absolute < 1_000_000) return `${(value / 1000).toFixed(1)}K`;
+  return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
 export function buildFooter(session: CardSession): Record<string, unknown> {
@@ -268,27 +267,40 @@ export function buildFooter(session: CardSession): Record<string, unknown> {
           ? "已终止"
           : "失败";
   const duration = (((session.completedAt ?? Date.now()) - session.createdAt) / 1000).toFixed(1);
-  const tokenParts: string[] = [];
-  if (f.inputTokens) tokenParts.push(`↑${compactNumber(f.inputTokens)}`);
-  if (f.outputTokens) tokenParts.push(`↓${compactNumber(f.outputTokens)}`);
-  if (f.cacheRead) tokenParts.push(`R${compactNumber(f.cacheRead)}`);
-  if (f.cacheWrite) tokenParts.push(`W${compactNumber(f.cacheWrite)}`);
-  if (typeof f.cacheHitPercent === "number" && (f.cacheRead || f.cacheWrite)) {
-    tokenParts.push(`CH${f.cacheHitPercent.toFixed(1)}%`);
-  }
+
+  // 第二行展示：↑ input ↓ output 💭 reasoning · 上下文 · 缓存 read/prompt (hit%)
+  // 字段仍来自 footer 既有累计值，不在此重新统计
+  const input = f.inputTokens ?? 0;
+  const output = f.outputTokens ?? 0;
+  const cacheRead = f.cacheRead ?? 0;
+  const cacheWrite = f.cacheWrite ?? 0;
+  const promptTokens = input + cacheRead + cacheWrite;
+
+  const tokenParts = [`↑ ${compactNumber(input)}`, `↓ ${compactNumber(output)}`];
   if (typeof f.reasoningTokens === "number" && f.reasoningTokens > 0) {
     tokenParts.push(`💭 ${compactNumber(f.reasoningTokens)}`);
   }
-  const tokens = tokenParts.length > 0 ? tokenParts.join(" ") : "↑0 ↓0";
+  const tokens = tokenParts.join(" ");
+
   const context = f.contextWindow
     ? `${compactNumber(f.contextTokens)}/${compactNumber(f.contextWindow)} (${Math.round(f.contextPercent ?? ((f.contextTokens ?? 0) / f.contextWindow * 100))}%)`
     : "?";
+
+  let cache = "";
+  if (cacheRead > 0 || cacheWrite > 0) {
+    // 与分子/分母同一口径：会话累计 cacheRead / (input+cacheRead+cacheWrite)
+    // 不用 footer.cacheHitPercent（那是最后一次请求的 CH，会和累计分数不一致）
+    const denom = promptTokens > 0 ? promptTokens : cacheRead + cacheWrite;
+    const hit = denom > 0 ? (cacheRead / denom) * 100 : 0;
+    cache = ` · 缓存 ${compactNumber(cacheRead)}/${compactNumber(denom)} (${Math.round(hit)}%)`;
+  }
+
   const error = session.errorMessage ? ` · ${truncate(session.errorMessage, 300)}` : "";
   return {
     tag: "markdown",
     element_id: FOOTER_ELEMENT_ID,
     text_size: "notation",
-    content: `${status} · 耗时 ${duration}s · ${f.model ?? "未知模型"} · API ${f.apiCalls}\n${tokens} · 上下文 ${context}${error}`,
+    content: `${status} · 耗时 ${duration}s · ${f.model ?? "未知模型"} · API ${f.apiCalls}\n${tokens} · 上下文 ${context}${cache}${error}`,
   };
 }
 
