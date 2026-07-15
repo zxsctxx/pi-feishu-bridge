@@ -1,5 +1,5 @@
 import type { CardKitOperations } from "../feishu/cardkit-client.js";
-import type { CardKitError } from "../feishu/errors.js";
+import { CardKitError, isCardIdInvalidError } from "../feishu/errors.js";
 import { normalizeMarkdown, splitMarkdown } from "../cardkit/markdown.js";
 import { trimPanelToTagLimit } from "../cardkit/limits.js";
 import { CardSession, type TerminalReason } from "./card-session.js";
@@ -25,21 +25,57 @@ export class StreamingCardManager {
     const session = new CardSession(`${Date.now()}-${userMsgId}`, chatId, userMsgId, this.options.flushIntervalMs); this.active = session;
     this.metrics?.setActive(1);
     if (this.legacyModeReason) {
-      session.fallbackReason = this.legacyModeReason;
-      session.transition("creation_failed", "card_creation_failed", "legacy_transport");
-      if (this.fallback.sendCard) session.fallbackCardMessageId = await this.fallback.sendCard(chatId, buildFallbackCard(session, this.options, false), userMsgId);
+      await this.enterImPatchFallback(session, this.legacyModeReason, "legacy_transport");
       return session;
     }
-    try { session.cardId = await this.cardkit.createCard(buildCreatingCard(this.options)); this.metrics?.increment("cardsCreated"); session.cardMessageId = await this.cardkit.sendCardReference(chatId, session.cardId, userMsgId); }
-    catch (error) {
-      session.fallbackReason = error instanceof Error ? error.message : String(error);
-      session.transition("creation_failed", "card_creation_failed", "start");
-      if (this.fallback.sendCard) {
-        try { session.fallbackCardMessageId = await this.fallback.sendCard(chatId, buildFallbackCard(session, this.options, false), userMsgId); }
-        catch { session.fallbackCardMessageId = null; }
-      }
+    try {
+      await this.bootstrapCardKit(session);
+    } catch (error) {
+      // create/send/重建均失败 → im_patch 兜底；清掉无效 cardId，避免后续误用
+      session.cardId = null;
+      session.cardMessageId = null;
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[pi-feishu] CardKit bootstrap failed, falling back to im_patch: ${reason}`);
+      await this.enterImPatchFallback(session, reason, "start");
     }
     return session;
+  }
+
+  /**
+   * CardKit 优先：create → send(含同 id 重试) → 仍 card_id invalid 则重建一次再 send。
+   * 成功写入 session.cardId / cardMessageId；失败抛错由 start 转 im_patch。
+   */
+  private async bootstrapCardKit(session: CardSession): Promise<void> {
+    const cardJson = buildCreatingCard(this.options);
+    session.cardId = await this.cardkit.createCard(cardJson);
+    this.metrics?.increment("cardsCreated");
+    try {
+      session.cardMessageId = await this.cardkit.sendCardReference(session.chatId, session.cardId, session.userMsgId);
+      return;
+    } catch (error) {
+      if (!isCardIdInvalidError(error)) throw error;
+      console.warn(`[pi-feishu] Card reference still invalid after retries; recreating card once. old_card_id=${session.cardId}`);
+    }
+    // 重建：旧 id 作废，新 create + send（send 内部仍有短延迟重试）
+    session.cardId = await this.cardkit.createCard(cardJson);
+    this.metrics?.increment("cardsCreated");
+    this.metrics?.increment("retries");
+    session.cardMessageId = await this.cardkit.sendCardReference(session.chatId, session.cardId, session.userMsgId);
+  }
+
+  private async enterImPatchFallback(session: CardSession, reason: string, source: string): Promise<void> {
+    session.fallbackReason = reason;
+    session.transition("creation_failed", "card_creation_failed", source);
+    if (!this.fallback.sendCard) return;
+    try {
+      session.fallbackCardMessageId = await this.fallback.sendCard(
+        session.chatId,
+        buildFallbackCard(session, this.options, false),
+        session.userMsgId,
+      );
+    } catch {
+      session.fallbackCardMessageId = null;
+    }
   }
 
   private accepts(s: CardSession): boolean { return !s.terminal || s.phase === "creation_failed"; }
@@ -122,16 +158,27 @@ export class StreamingCardManager {
     s.finalized = true;
     s.flush.complete();
     if (!s.cardId) {
+      // im_patch / 无原生卡：尽量 PATCH 终态卡，失败则纯文本必达
       this.metrics?.increment("fallbacks");
+      let delivered = false;
       if (s.fallbackCardMessageId && this.fallback.updateCard) {
-        try { await this.fallback.updateCard(s.fallbackCardMessageId, buildFallbackCard(s, this.options, true)); }
-        catch { await this.fallback.sendMessage(s.chatId, buildFallbackText(s, this.options) || "处理结束，但未生成文本回复。", s.userMsgId); }
-      } else {
-        await this.fallback.sendMessage(s.chatId, buildFallbackText(s, this.options) || "处理结束，但未生成文本回复。", s.userMsgId);
+        try {
+          await this.fallback.updateCard(s.fallbackCardMessageId, buildFallbackCard(s, this.options, true));
+          delivered = true;
+          s.fallbackPatched = true;
+        } catch {
+          s.fallbackCardMessageId = null;
+        }
       }
-      this.metrics?.setActive(0); return;
+      if (!delivered) await this.deliverFinalText(s);
+      this.metrics?.setActive(0);
+      return;
     }
-    if (s.nativeUpdatesStopped) { await this.sendMissingTail(s); this.metrics?.setActive(0); return; }
+    if (s.nativeUpdatesStopped) {
+      await this.sendMissingTail(s);
+      this.metrics?.setActive(0);
+      return;
+    }
     try {
       await this.ensureStreamingElements(s);
       const terminalPanel = buildPanelElement(s, this.options, true) as { header?: unknown; elements?: unknown };
@@ -158,8 +205,23 @@ export class StreamingCardManager {
       }
       await s.updates.enqueue(() => this.cardkit.updateSettings(s.cardId!, { streaming_mode: false, summary: { content: (s.answer || s.errorMessage || "处理结束").slice(0, 120) } }, s.nextSequence()));
       await s.updates.drain();
-      this.metrics?.recordFinalize(); this.metrics?.setActive(0);
-    } catch (error) { this.stopNativeUpdates(s, error); await this.sendMissingTail(s); this.metrics?.setActive(0); }
+      this.metrics?.recordFinalize();
+      this.metrics?.setActive(0);
+    } catch (error) {
+      this.stopNativeUpdates(s, error);
+      await this.sendMissingTail(s);
+      this.metrics?.setActive(0);
+    }
+  }
+
+  /** 最终必达：整份 fallback 文本（含答案/错误），避免飞书侧空白 */
+  private async deliverFinalText(s: CardSession): Promise<void> {
+    const text = buildFallbackText(s, this.options) || s.answer || (s.errorMessage ? `处理失败：${s.errorMessage}` : "处理结束，但未生成文本回复。");
+    try {
+      await this.fallback.sendMessage(s.chatId, text, s.userMsgId);
+    } catch (error) {
+      console.warn(`[pi-feishu] Final text delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   private describe(error: unknown): string { return (error as CardKitError)?.message ?? String(error); }
 
@@ -266,14 +328,34 @@ export class StreamingCardManager {
   private async sendMissingTail(s: CardSession): Promise<void> {
     if (s.terminalReason === "message_unavailable") return;
     if (!s.fallbackPatched) {
+      // 优先用 message_id 整卡 PATCH（im_patch 路径）；无 message_id 时再尝试 fallback 卡
       if (await this.patchCompatibilityCard(s, true)) {
         this.metrics?.increment("fallbacks");
         return;
       }
+      if (s.fallbackCardMessageId && this.fallback.updateCard) {
+        try {
+          await this.fallback.updateCard(s.fallbackCardMessageId, buildFallbackCard(s, this.options, true));
+          s.fallbackPatched = true;
+          this.metrics?.increment("fallbacks");
+          return;
+        } catch {
+          s.fallbackCardMessageId = null;
+        }
+      }
     }
-    const tail = s.answer.slice(s.deliveredAnswerLength);
+    this.metrics?.increment("fallbacks");
+    const undelivered = s.answer.slice(s.deliveredAnswerLength);
     const diagnostic = s.nativeErrorCode ? `（CardKit ${s.nativeErrorCode}/${s.nativeErrorKind}）` : "";
-    if (tail) { this.metrics?.increment("fallbacks"); await this.fallback.sendMessage(s.chatId, `流式更新中断${diagnostic}，以下为剩余内容：\n\n${tail}`, s.userMsgId); }
-    else if (!s.answer && s.errorMessage) { this.metrics?.increment("fallbacks"); await this.fallback.sendMessage(s.chatId, `处理失败：${s.errorMessage}`, s.userMsgId); }
+    if (undelivered) {
+      try {
+        await this.fallback.sendMessage(s.chatId, `流式更新中断${diagnostic}，以下为剩余内容：\n\n${undelivered}`, s.userMsgId);
+      } catch {
+        await this.deliverFinalText(s);
+      }
+      return;
+    }
+    // 无增量尾部也要保证有一条最终消息（答案可能已部分送达，或仅有错误）
+    if (s.answer || s.errorMessage || s.fallbackReason) await this.deliverFinalText(s);
   }
 }

@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { CardKitError, classifyCardKitError } from "./errors.js";
+import { CardKitError, classifyCardKitError, isCardIdInvalidError } from "./errors.js";
 import { UnavailableMessageGuard } from "./unavailable-guard.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
+
+/** create 成功后引用发送的竞态窗口：同 card_id 短延迟重试 */
+const SEND_REFERENCE_MAX_ATTEMPTS = 3;
+const SEND_REFERENCE_RETRY_DELAYS_MS = [500, 1000, 1500];
 
 export interface CardKitOperations {
   createCard(card: Record<string, unknown>): Promise<string>;
@@ -26,20 +30,38 @@ export class FeishuCardKitClient implements CardKitOperations {
 
   async sendCardReference(chatId: string, cardId: string, replyToMessageId?: string): Promise<string> {
     if (replyToMessageId && this.unavailable.has(replyToMessageId)) throw new CardKitError(230011, "message_unavailable", "Source message is unavailable");
-    const content = JSON.stringify({ type: "card", data: { card_id: cardId } });
-    try {
-      this.metrics?.increment("cardkitApiCalls");
-      const response = replyToMessageId
-        ? await this.client.im.message.reply({ path: { message_id: replyToMessageId }, data: { msg_type: "interactive", content } })
-        : await this.client.im.message.create({ params: { receive_id_type: "chat_id" }, data: { receive_id: chatId, msg_type: "interactive", content } });
-      const messageId = response?.data?.message_id;
-      if (!messageId) throw new CardKitError(response?.code, "schema", "Card reference response did not contain message_id");
-      return messageId;
-    } catch (error) {
-      const classified = classifyCardKitError(error);
-      if (replyToMessageId && classified.kind === "message_unavailable") this.unavailable.mark(replyToMessageId);
-      throw classified;
+    let lastError: CardKitError | undefined;
+    for (let attempt = 0; attempt < SEND_REFERENCE_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.sendCardReferenceOnce(chatId, cardId, replyToMessageId);
+      } catch (error) {
+        const classified = classifyCardKitError(error);
+        lastError = classified;
+        if (replyToMessageId && classified.kind === "message_unavailable") {
+          this.unavailable.mark(replyToMessageId);
+          throw classified;
+        }
+        // 仅 card_id 未就绪/间歇失效时重试同 id；其它错误立即抛出
+        if (!isCardIdInvalidError(classified) || attempt >= SEND_REFERENCE_MAX_ATTEMPTS - 1) throw classified;
+        const delay = SEND_REFERENCE_RETRY_DELAYS_MS[attempt] ?? 1500;
+        this.metrics?.increment("retries");
+        console.warn(`[pi-feishu] Card reference not ready (card_id invalid), retry in ${delay}ms attempt=${attempt + 1}/${SEND_REFERENCE_MAX_ATTEMPTS} card_id=${cardId}`);
+        await this.wait(delay);
+      }
     }
+    throw lastError ?? new CardKitError(230099, "card_id_invalid", "sendCardReference exhausted retries");
+  }
+
+  private async sendCardReferenceOnce(chatId: string, cardId: string, replyToMessageId?: string): Promise<string> {
+    const content = JSON.stringify({ type: "card", data: { card_id: cardId } });
+    this.metrics?.increment("cardkitApiCalls");
+    const response = replyToMessageId
+      ? await this.client.im.message.reply({ path: { message_id: replyToMessageId }, data: { msg_type: "interactive", content } })
+      : await this.client.im.message.create({ params: { receive_id_type: "chat_id" }, data: { receive_id: chatId, msg_type: "interactive", content } });
+    if (response?.code && response.code !== 0) throw response;
+    const messageId = response?.data?.message_id;
+    if (!messageId) throw new CardKitError(response?.code, "schema", "Card reference response did not contain message_id");
+    return messageId;
   }
 
   async updateElement(cardId: string, elementId: string, content: string, sequence: number): Promise<void> {
