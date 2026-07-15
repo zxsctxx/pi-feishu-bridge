@@ -172,6 +172,114 @@ const CMD_FEISHU_SESSION_NEW = "feishu-session-new";
 const CMD_FEISHU_RUNTIME_RELOAD = "feishu-runtime-reload";
 const INTERNAL_SESSION_COMMANDS = new Set([CMD_FEISHU_SESSION_NEW, CMD_FEISHU_RUNTIME_RELOAD]);
 
+/** 与 TUI `/model pattern:level` 对齐的 thinking 后缀 */
+const THINKING_LEVELS = new Set([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+type ThinkingLevelName =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+function parseModelArg(raw: string): { pattern: string; thinking?: ThinkingLevelName } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { pattern: "" };
+  const lastColon = trimmed.lastIndexOf(":");
+  if (lastColon === -1) return { pattern: trimmed };
+  const suffix = trimmed.slice(lastColon + 1).toLowerCase();
+  if (!THINKING_LEVELS.has(suffix)) return { pattern: trimmed };
+  return {
+    pattern: trimmed.slice(0, lastColon).trim(),
+    thinking: suffix as ThinkingLevelName,
+  };
+}
+
+function formatModelRef(model: { provider: string; id: string; name?: string }): string {
+  const base = `${model.provider}/${model.id}`;
+  return model.name && model.name !== model.id ? `${base} (${model.name})` : base;
+}
+
+/**
+ * 解析飞书 `/model` 参数，对齐 TUI 常见写法：
+ * - `cpa/grok45`
+ * - `grok45`（仅当全局唯一）
+ * - `cpa/grok45:high`
+ */
+function resolveModelFromArg(
+  registry: ExtensionContext["modelRegistry"],
+  pattern: string,
+): { model: NonNullable<ExtensionContext["model"]> } | { error: string } {
+  const available = registry.getAvailable();
+  if (available.length === 0) {
+    return { error: "当前没有可用模型（请先配置 auth / models.json）。" };
+  }
+
+  const normalized = pattern.trim();
+  if (!normalized) {
+    return { error: "请指定模型，例如 /model cpa/grok45" };
+  }
+
+  const lower = normalized.toLowerCase();
+  const slash = normalized.indexOf("/");
+  if (slash !== -1) {
+    const provider = normalized.slice(0, slash).trim();
+    const modelId = normalized.slice(slash + 1).trim();
+    if (provider && modelId) {
+      const exact =
+        registry.find(provider, modelId) ??
+        available.find(
+          (m) =>
+            m.provider.toLowerCase() === provider.toLowerCase() &&
+            m.id.toLowerCase() === modelId.toLowerCase(),
+        );
+      if (exact) {
+        if (!registry.hasConfiguredAuth(exact)) {
+          return { error: `模型 ${formatModelRef(exact)} 已注册但未配置鉴权。` };
+        }
+        return { model: exact };
+      }
+    }
+  }
+
+  const idExact = available.filter((m) => m.id.toLowerCase() === lower);
+  if (idExact.length === 1) return { model: idExact[0] };
+  if (idExact.length > 1) {
+    const list = idExact.map((m) => `  - ${formatModelRef(m)}`).join("\n");
+    return { error: `模型 id 在多个 provider 中重复，请用 provider/id：\n${list}` };
+  }
+
+  const partial = available.filter(
+    (m) =>
+      m.id.toLowerCase().includes(lower) ||
+      m.name?.toLowerCase().includes(lower) ||
+      `${m.provider}/${m.id}`.toLowerCase().includes(lower),
+  );
+  if (partial.length === 1) return { model: partial[0] };
+  if (partial.length > 1) {
+    const list = partial
+      .slice(0, 12)
+      .map((m) => `  - ${formatModelRef(m)}`)
+      .join("\n");
+    const more = partial.length > 12 ? `\n  …共 ${partial.length} 个` : "";
+    return { error: `匹配到多个模型，请写更精确的 provider/id：\n${list}${more}` };
+  }
+
+  return {
+    error: `未找到模型：${normalized}\n示例：/model cpa/grok45  或  /model cpa/grok45:high`,
+  };
+}
+
 /**
  * pi.sendUserMessage 硬编码 expandPromptTemplates:false，不会执行扩展命令。
  * 对白名单内部命令改走 expandPromptTemplates:true，才能拿到 ExtensionCommandContext
@@ -581,11 +689,86 @@ export default function (pi: ExtensionAPI) {
         break;
       }
 
+      case "/model": {
+        if (!ctxRef) {
+          await client?.sendMessage(chatId, "无法切换模型：会话上下文不可用。", msgId);
+          break;
+        }
+        const registry = ctxRef.modelRegistry;
+        const current = ctxRef.model;
+        const thinking = pi.getThinkingLevel();
+
+        if (!args.trim()) {
+          const available = registry.getAvailable();
+          const currentLine = current
+            ? `当前: ${formatModelRef(current)} · thinking ${thinking}`
+            : "当前: （未选择模型）";
+          const list = available
+            .slice(0, 30)
+            .map((m) => {
+              const mark =
+                current && m.provider === current.provider && m.id === current.id ? " *" : "";
+              return `  - ${formatModelRef(m)}${mark}`;
+            })
+            .join("\n");
+          const more =
+            available.length > 30 ? `\n  …共 ${available.length} 个可用模型` : "";
+          await client?.sendMessage(
+            chatId,
+            [
+              currentLine,
+              "用法: /model <provider/id[:thinking]>",
+              "示例: /model cpa/grok45",
+              "      /model cpa/grok45:high",
+              "",
+              available.length === 0 ? "（无可用模型）" : `可用模型:\n${list}${more}`,
+            ].join("\n"),
+            msgId,
+          );
+          break;
+        }
+
+        const { pattern, thinking: nextThinking } = parseModelArg(args);
+        const resolved = resolveModelFromArg(registry, pattern);
+        if ("error" in resolved) {
+          await client?.sendMessage(chatId, resolved.error, msgId);
+          break;
+        }
+
+        const ok = await pi.setModel(resolved.model);
+        if (!ok) {
+          await client?.sendMessage(
+            chatId,
+            `切换失败：${formatModelRef(resolved.model)} 无可用 API key / 鉴权。`,
+            msgId,
+          );
+          break;
+        }
+
+        if (nextThinking) {
+          pi.setThinkingLevel(nextThinking);
+        }
+        const appliedThinking = pi.getThinkingLevel();
+        const busyNote = ctxRef.isIdle()
+          ? ""
+          : "\n（当前任务仍在运行，新模型将从下一轮对话生效）";
+        await client?.sendMessage(
+          chatId,
+          `已切换模型: ${formatModelRef(resolved.model)} · thinking ${appliedThinking}${busyNote}`,
+          msgId,
+        );
+        break;
+      }
+
       case "/status": {
         const status = client?.getStatus() ?? "未启动";
         const ctxUsage = ctxRef?.getContextUsage();
         const queue = chatQueues.get(chatId);
+        const currentModel = ctxRef?.model;
         let reply = `Pi 状态:\n- 飞书连接: ${status}\n- App ID: ${config.appId ? "****" + config.appId.slice(-4) : "未设置"}`;
+        if (currentModel) {
+          reply += `\n- 模型: ${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`;
+        }
         const warning = accessRiskWarning(config); if (warning) reply += `\n- ${warning}`;
         if (ctxUsage && ctxUsage.tokens !== null) {
           reply += `\n- 上下文: ${ctxUsage.tokens}/${ctxUsage.contextWindow} tokens (${ctxUsage.percent ?? "?"}%)`;
@@ -605,6 +788,7 @@ export default function (pi: ExtensionAPI) {
           "  /stop      - 中断当前处理，清空排队",
           "  /queue     - 查看排队状态",
           "  /compact   - 压缩上下文",
+          "  /model     - 查看/切换模型（如 /model cpa/grok45）",
           "  /status    - 查看 Pi 状态",
           "  /help      - 显示帮助",
           "",
@@ -612,7 +796,6 @@ export default function (pi: ExtensionAPI) {
           "  /feishu status | monitor [reset] | config [reload] | doctor | help",
           "",
           "以下命令请在 Pi 终端中执行:",
-          "  /model     - 切换模型",
           "  /tools     - 管理工具",
         ].join("\n");
         await client?.sendMessage(chatId, helpText, msgId);
