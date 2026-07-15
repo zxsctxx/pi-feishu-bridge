@@ -46,9 +46,9 @@ import {
 } from "./session/resume.js";
 import {
   aggregateSessionStats,
-  formatContextUsageLine,
   formatNameResult,
   formatSessionMeta,
+  formatStatusSessionLines,
 } from "./session/meta.js";
 
 // ─── 常量 ─────────────────────────────────────────────
@@ -993,29 +993,46 @@ export default function (pi: ExtensionAPI) {
       }
 
       case "/status": {
-        // 运行态快照（桥接连接/排队）；会话累计统计见 /session
+        // 运行态 + 当前会话累计（与 /session 字段对齐）
         const status = client?.getStatus() ?? "未启动";
-        const ctxUsage = ctxRef?.getContextUsage();
         const queue = chatQueues.get(chatId);
-        const currentModel = ctxRef?.model;
-        const sessionName = pi.getSessionName();
         let reply = `Pi 状态:\n- 飞书连接: ${status}\n- App ID: ${config.appId ? "****" + config.appId.slice(-4) : "未设置"}`;
-        if (sessionName) {
-          reply += `\n- 会话名: ${sessionName}`;
-        }
-        if (currentModel) {
-          reply += `\n- 模型: ${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`;
-        }
-        const warning = accessRiskWarning(config); if (warning) reply += `\n- ${warning}`;
-        if (ctxUsage && ctxUsage.tokens !== null) {
-          reply += `\n- ${formatContextUsageLine(ctxUsage.tokens, ctxUsage.contextWindow, ctxUsage.percent, { withUnit: true })}`;
-        }
+        const warning = accessRiskWarning(config);
+        if (warning) reply += `\n- ${warning}`;
         if (queue && queue.queue.length > 0) {
           reply += `\n- 排队: ${queue.queue.length} 条`;
         } else if (ctxRef && !ctxRef.isIdle()) {
           reply += "\n- 状态: 处理中";
         } else {
           reply += "\n- 状态: 空闲";
+        }
+
+        if (ctxRef) {
+          const sm = ctxRef.sessionManager;
+          const stats = aggregateSessionStats(
+            sm.getEntries() as Parameters<typeof aggregateSessionStats>[0],
+          );
+          const ctxUsage = ctxRef.getContextUsage();
+          const currentModel = ctxRef.model;
+          const modelLine = currentModel
+            ? `${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`
+            : undefined;
+          const sessionLines = formatStatusSessionLines({
+            name: pi.getSessionName() ?? sm.getSessionName(),
+            sessionId: sm.getSessionId(),
+            sessionFile: sm.getSessionFile(),
+            cwd: ctxRef.cwd || sm.getCwd() || undefined,
+            ...stats,
+            context: ctxUsage
+              ? {
+                  tokens: ctxUsage.tokens,
+                  contextWindow: ctxUsage.contextWindow,
+                  percent: ctxUsage.percent,
+                }
+              : undefined,
+            modelLine,
+          });
+          reply += `\n${sessionLines.join("\n")}`;
         }
         await client?.sendMessage(chatId, reply, msgId);
         break;

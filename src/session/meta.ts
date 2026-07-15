@@ -132,6 +132,49 @@ export function formatContextUsageLine(
   return `上下文: ${formatCount(tokens)}/${formatCount(contextWindow)}${unit}${pctPart}`;
 }
 
+/** /status 用的会话累计块（与 /session 字段对齐，bullet 风格） */
+export function formatStatusSessionLines(info: SessionMetaInput): string[] {
+  const lines: string[] = [];
+  if (info.name) lines.push(`- 会话名: ${info.name}`);
+  lines.push(`- 会话 ID: ${info.sessionId}`);
+  lines.push(`- 文件: ${info.sessionFile ?? "（内存/未落盘）"}`);
+  if (info.cwd) lines.push(`- 工作目录: ${info.cwd}`);
+  if (info.modelLine) lines.push(`- 模型: ${info.modelLine}`);
+
+  lines.push(
+    `- 消息: 合计 ${info.totalMessages} · 用户 ${info.userMessages} · 助手 ${info.assistantMessages} · 工具 ${info.toolCalls} 次调用 / ${info.toolResults} 次结果`,
+  );
+
+  const { input, output, cacheRead, cacheWrite, total } = info.tokens;
+  const promptTokens = input + cacheRead + cacheWrite;
+  let tokenLine = `- Token: 合计 ${formatCount(total)} · 输入 ${formatCount(promptTokens)} · 输出 ${formatCount(output)}`;
+  if (promptTokens > 0 && (cacheRead > 0 || cacheWrite > 0)) {
+    const hit = ((cacheRead / promptTokens) * 100).toFixed(1);
+    tokenLine += ` · 缓存命中 ${formatCount(cacheRead)} (${hit}%)`;
+    if (cacheWrite > 0) {
+      tokenLine += ` · 缓存写入 ${formatCount(cacheWrite)}`;
+    }
+  }
+  lines.push(tokenLine);
+
+  if (info.cost > 0) {
+    lines.push(`- 费用: $${info.cost.toFixed(3)}`);
+  }
+
+  if (info.context && info.context.tokens !== null && info.context.contextWindow > 0) {
+    lines.push(
+      `- ${formatContextUsageLine(
+        info.context.tokens,
+        info.context.contextWindow,
+        info.context.percent,
+        { withUnit: true },
+      )}`,
+    );
+  }
+
+  return lines;
+}
+
 export function formatSessionMeta(info: SessionMetaInput): string {
   const lines: string[] = ["会话信息"];
   if (info.name) lines.push(`名称: ${info.name}`);

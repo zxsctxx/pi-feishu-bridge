@@ -5,6 +5,7 @@ import {
   formatNameResult,
   formatPercent,
   formatSessionMeta,
+  formatStatusSessionLines,
 } from "./meta.js";
 
 describe("aggregateSessionStats", () => {
@@ -84,6 +85,35 @@ describe("formatPercent / formatContextUsageLine", () => {
     expect(formatContextUsageLine(81432, 256000, 31.809375, { withUnit: true })).toBe(
       "上下文: 81,432/256,000 tokens (31.81%)",
     );
+  });
+});
+
+describe("formatStatusSessionLines", () => {
+  it("includes id, messages, tokens, cost, context", () => {
+    const lines = formatStatusSessionLines({
+      name: "任务 A",
+      sessionId: "abc-123",
+      sessionFile: "C:/s/a.jsonl",
+      cwd: "C:/proj",
+      userMessages: 2,
+      assistantMessages: 2,
+      toolCalls: 1,
+      toolResults: 1,
+      totalMessages: 5,
+      tokens: { input: 10, output: 5, cacheRead: 20, cacheWrite: 0, total: 35 },
+      cost: 0.05,
+      context: { tokens: 81432, contextWindow: 256000, percent: 31.809375 },
+      modelLine: "cpa/grok45 · thinking high",
+    });
+    const text = lines.join("\n");
+    expect(text).toContain("- 会话名: 任务 A");
+    expect(text).toContain("- 会话 ID: abc-123");
+    expect(text).toContain("- 文件: C:/s/a.jsonl");
+    expect(text).toContain("- 工作目录: C:/proj");
+    expect(text).toContain("工具 1 次调用");
+    expect(text).toContain("缓存命中");
+    expect(text).toContain("费用: $0.050");
+    expect(text).toContain("(31.81%)");
   });
 });
 
