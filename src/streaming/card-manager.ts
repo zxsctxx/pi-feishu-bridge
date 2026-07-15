@@ -3,7 +3,7 @@ import { CardKitError, isCardIdInvalidError } from "../feishu/errors.js";
 import { normalizeMarkdown, splitMarkdown } from "../cardkit/markdown.js";
 import { trimPanelToTagLimit } from "../cardkit/limits.js";
 import { CardSession, type TerminalReason } from "./card-session.js";
-import { ANSWER_ELEMENT_ID, FOOTER_ELEMENT_ID, LOADING_ELEMENT_ID, LOADING_HINT_ELEMENT_ID, PANEL_ELEMENT_ID, addElementsAction, buildCreatingCard, buildFallbackCard, buildFallbackText, buildFooter, buildPanelElement, deleteElementsAction, partialUpdateElementAction, type CardRenderOptions } from "./card-renderer.js";
+import { ANSWER_ELEMENT_ID, LOADING_ELEMENT_ID, LOADING_HINT_ELEMENT_ID, PANEL_ELEMENT_ID, addElementsAction, buildCreatingCard, buildFallbackCard, buildFallbackText, buildPanelElement, deleteElementsAction, footerElements, partialUpdateElementAction, type CardRenderOptions } from "./card-renderer.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
 
 export interface StreamingManagerOptions extends CardRenderOptions { flushIntervalMs: number; maxAnswerElementChars: number; }
@@ -22,7 +22,10 @@ export class StreamingCardManager {
 
   async start(chatId: string, userMsgId: string): Promise<CardSession> {
     if (this.active && !this.active.terminal) await this.abort("被新请求取代", "replaced");
-    const session = new CardSession(`${Date.now()}-${userMsgId}`, chatId, userMsgId, this.options.flushIntervalMs); this.active = session;
+    const session = new CardSession(`${Date.now()}-${userMsgId}`, chatId, userMsgId, this.options.flushIntervalMs, {
+      detailChars: this.options.maxToolDetailChars,
+      outputChars: this.options.maxToolOutputChars,
+    }); this.active = session;
     this.metrics?.setActive(1);
     if (this.legacyModeReason) {
       await this.enterImPatchFallback(session, this.legacyModeReason, "legacy_transport");
@@ -90,17 +93,17 @@ export class StreamingCardManager {
   }
   onToolStart(id: string, name: string, args: unknown): void {
     const s = this.active; if (!s || !this.accepts(s)) return;
-    s.recordTool(id); s.tools.start(id, name, args); s.panelDirty = true; this.flushImmediate(s);
+    s.recordTool(id); s.tools.start(id, name, args); s.markLoopActivity(); s.panelDirty = true; this.flushImmediate(s);
   }
   onToolUpdate(id: string, result: unknown): void {
     const s = this.active; if (!s || !this.accepts(s)) return;
     if (s.tools.update(id, result)) s.recordTool(id);
-    s.panelDirty = true; this.schedule(s);
+    s.markLoopActivity(); s.panelDirty = true; this.schedule(s);
   }
   onToolEnd(id: string, result: unknown, error: boolean): void {
     const s = this.active; if (!s || !this.accepts(s)) return;
     if (s.tools.end(id, result, error)) s.recordTool(id);
-    s.panelDirty = true; this.flushImmediate(s);
+    s.markLoopActivity(); s.panelDirty = true; this.flushImmediate(s);
   }
   recordError(message: string): void { const s = this.active; if (!s || !this.accepts(s)) return; s.errorMessage = message; }
   onAgentEnd(): void {
@@ -185,9 +188,10 @@ export class StreamingCardManager {
         header?: unknown;
         elements?: unknown;
       };
+      const footerEls = footerElements(s, this.options.footer);
       const terminalActions = [
         partialUpdateElementAction(PANEL_ELEMENT_ID, { header: terminalPanel.header, elements: terminalPanel.elements }),
-        addElementsAction([buildFooter(s)], LOADING_ELEMENT_ID),
+        ...(footerEls.length > 0 ? [addElementsAction(footerEls, LOADING_ELEMENT_ID)] : []),
         deleteElementsAction([LOADING_ELEMENT_ID]),
       ];
       try { await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, terminalActions, s.nextSequence())); }
@@ -202,7 +206,7 @@ export class StreamingCardManager {
         };
         await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
           partialUpdateElementAction(PANEL_ELEMENT_ID, { header: minimalPanel.header, elements: minimalPanel.elements }),
-          addElementsAction([buildFooter(s)], LOADING_ELEMENT_ID),
+          ...(footerEls.length > 0 ? [addElementsAction(footerEls, LOADING_ELEMENT_ID)] : []),
           deleteElementsAction([LOADING_ELEMENT_ID]),
         ], s.nextSequence()));
       }

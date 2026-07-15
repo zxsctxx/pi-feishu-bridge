@@ -47,11 +47,16 @@ export class CardSession {
   answerDirty = false;
   sequence = 0;
   epoch = 0;
-  readonly tools = new ToolTracker();
+  readonly tools: ToolTracker;
   readonly flush: FlushScheduler;
   readonly updates = new UpdateQueue();
+  /** 建卡/接住本轮请求的墙钟起点（footer 整轮耗时用） */
   readonly createdAt = Date.now();
   completedAt: number | null = null;
+  /** 首次推理/工具活动；过程面板耗时起点 */
+  loopStartedAt: number | null = null;
+  /** 最近一次推理/工具活动；过程面板耗时终点 */
+  loopActiveAt: number | null = null;
   finalized = false;
   currentCardStart = 0;
   rolloverCardIds: string[] = [];
@@ -63,7 +68,14 @@ export class CardSession {
   elementsInitialized = false;
   footer: FooterMetrics = { apiCalls: 0 };
 
-  constructor(readonly requestId: string, readonly chatId: string, readonly userMsgId: string, flushIntervalMs: number) {
+  constructor(
+    readonly requestId: string,
+    readonly chatId: string,
+    readonly userMsgId: string,
+    flushIntervalMs: number,
+    toolLimits?: { detailChars?: number; outputChars?: number },
+  ) {
+    this.tools = new ToolTracker(toolLimits);
     this.flush = new FlushScheduler(flushIntervalMs);
   }
 
@@ -88,16 +100,54 @@ export class CardSession {
   }
 
   beginStreaming(): void { if (this.phase === "creating") this.transition("streaming"); }
+
+  /** 标记 agent 过程活动（推理/工具），供面板标题耗时使用 */
+  markLoopActivity(at: number = Date.now()): void {
+    if (this.loopStartedAt == null) this.loopStartedAt = at;
+    this.loopActiveAt = at;
+  }
+
+  /** footer：建卡 → 终态的整轮墙钟（秒） */
+  wallClockSeconds(end: number = this.completedAt ?? Date.now()): number {
+    return Math.max(0, (end - this.createdAt) / 1000);
+  }
+
+  /**
+   * 过程面板：首次活动 → 最近活动的墙钟（秒）。
+   * 终态用 loopActiveAt；流式中用 now，便于标题随过程推进。
+   * 尚无活动时返回 0。
+   */
+  loopSeconds(terminal = false, now: number = Date.now()): number {
+    if (this.loopStartedAt == null) return 0;
+    const end = terminal
+      ? (this.loopActiveAt ?? this.completedAt ?? now)
+      : now;
+    return Math.max(0, (end - this.loopStartedAt) / 1000);
+  }
+
   appendText(delta: string): void { if ((!this.terminal || this.phase === "creation_failed") && delta) { this.finishThinking(); this.beginStreaming(); this.answer += delta; this.answerDirty = true; } }
-  appendThinking(delta: string): void { if ((!this.terminal || this.phase === "creation_failed") && delta) { this.beginStreaming(); this.currentThinking += delta; this.panelDirty = true; } }
+  appendThinking(delta: string): void {
+    if ((!this.terminal || this.phase === "creation_failed") && delta) {
+      this.beginStreaming();
+      this.markLoopActivity();
+      this.currentThinking += delta;
+      this.panelDirty = true;
+    }
+  }
   recordTool(toolCallId: string): void {
     if (this.panelEvents.some((event) => event.type === "tool" && event.toolCallId === toolCallId)) return;
-    this.finishThinking(); this.beginStreaming(); this.panelEvents.push({ type: "tool", toolCallId }); this.panelDirty = true;
+    this.finishThinking();
+    this.beginStreaming();
+    this.markLoopActivity();
+    this.panelEvents.push({ type: "tool", toolCallId });
+    this.panelDirty = true;
   }
   finishThinking(): void {
     if (!this.currentThinking) return;
     this.thinkingRounds.push(this.currentThinking);
     this.panelEvents.push({ type: "thinking", index: this.thinkingRounds.length - 1 });
-    this.currentThinking = ""; this.panelDirty = true;
+    this.currentThinking = "";
+    this.markLoopActivity();
+    this.panelDirty = true;
   }
 }

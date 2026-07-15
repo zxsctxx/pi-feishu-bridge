@@ -13,8 +13,13 @@ const SECRET_KEY = /token|secret|password|api[_-]?key|authorization|cookie|crede
 const SECRET_VALUE =
   /(authorization\s*[:=]\s*|bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,;]+/gi;
 
-const DETAIL_LIMIT = 500;
-const OUTPUT_LIMIT = 800;
+export const DEFAULT_DETAIL_LIMIT = 500;
+export const DEFAULT_OUTPUT_LIMIT = 800;
+
+export interface ToolTrackerLimits {
+  detailChars?: number;
+  outputChars?: number;
+}
 
 function sanitize(value: unknown, depth = 0): unknown {
   if (depth > 3) return "[truncated]";
@@ -52,13 +57,17 @@ function pathOf(args: Record<string, unknown>): string {
 }
 
 /** 工具参数 → 人类可读一行（对齐 pi 终端 formatToolCall 思路） */
-export function formatToolDetail(name: string, args: unknown): string {
+export function formatToolDetail(
+  name: string,
+  args: unknown,
+  detailLimit: number = DEFAULT_DETAIL_LIMIT,
+): string {
   try {
     const clean = sanitize(args);
-    if (typeof clean === "string") return clip(clean, DETAIL_LIMIT);
+    if (typeof clean === "string") return clip(clean, detailLimit);
     const obj = asRecord(clean);
     if (!obj) {
-      return clip(JSON.stringify(clean), DETAIL_LIMIT);
+      return clip(JSON.stringify(clean), detailLimit);
     }
 
     const tool = name.toLowerCase();
@@ -67,7 +76,7 @@ export function formatToolDetail(name: string, args: unknown): string {
       case "shell":
       case "run": {
         const cmd = String(obj.command ?? obj.cmd ?? "").trim();
-        return clip(cmd || JSON.stringify(obj), DETAIL_LIMIT);
+        return clip(cmd || JSON.stringify(obj), detailLimit);
       }
       case "read": {
         const path = pathOf(obj);
@@ -76,35 +85,35 @@ export function formatToolDetail(name: string, args: unknown): string {
         if (offset !== undefined || limit !== undefined) {
           const start = offset ?? 1;
           const end = limit !== undefined ? Number(start) + Number(limit) - 1 : "";
-          return clip(`${path}:${start}${end !== "" ? `-${end}` : ""}`, DETAIL_LIMIT);
+          return clip(`${path}:${start}${end !== "" ? `-${end}` : ""}`, detailLimit);
         }
-        return clip(path || JSON.stringify(obj), DETAIL_LIMIT);
+        return clip(path || JSON.stringify(obj), detailLimit);
       }
       case "write":
       case "edit": {
         const path = pathOf(obj);
-        return clip(path || JSON.stringify(obj), DETAIL_LIMIT);
+        return clip(path || JSON.stringify(obj), detailLimit);
       }
       case "grep":
       case "rg": {
         const pattern = String(obj.pattern ?? obj.query ?? "");
         const path = pathOf(obj) || String(obj.path ?? ".");
         const parts = [pattern ? `/${pattern}/` : "", path].filter(Boolean);
-        return clip(parts.join(" ") || JSON.stringify(obj), DETAIL_LIMIT);
+        return clip(parts.join(" ") || JSON.stringify(obj), detailLimit);
       }
       case "find":
       case "ls": {
         const path = pathOf(obj) || String(obj.path ?? ".");
         const pattern = obj.pattern != null ? String(obj.pattern) : "";
-        return clip(pattern ? `${path} ${pattern}` : path, DETAIL_LIMIT);
+        return clip(pattern ? `${path} ${pattern}` : path, detailLimit);
       }
       default: {
         // 通用：优先 command / path / 短 key=value，避免整包 JSON
         if (typeof obj.command === "string" && obj.command.trim()) {
-          return clip(String(obj.command), DETAIL_LIMIT);
+          return clip(String(obj.command), detailLimit);
         }
         if (pathOf(obj)) {
-          return clip(pathOf(obj), DETAIL_LIMIT);
+          return clip(pathOf(obj), detailLimit);
         }
         const pairs: string[] = [];
         for (const [key, item] of Object.entries(obj).slice(0, 6)) {
@@ -115,31 +124,34 @@ export function formatToolDetail(name: string, args: unknown): string {
             pairs.push(`${key}=…`);
           }
         }
-        return clip(pairs.join(" ") || JSON.stringify(obj), DETAIL_LIMIT);
+        return clip(pairs.join(" ") || JSON.stringify(obj), detailLimit);
       }
     }
   } catch {
-    return clip(String(args), DETAIL_LIMIT);
+    return clip(String(args), detailLimit);
   }
 }
 
 /** 抽取 tool result 中最有用的文本，一行展示 */
-export function formatToolOutput(result: unknown): string {
+export function formatToolOutput(
+  result: unknown,
+  outputLimit: number = DEFAULT_OUTPUT_LIMIT,
+): string {
   try {
     const clean = sanitize(result);
-    if (typeof clean === "string") return clip(clean, OUTPUT_LIMIT);
+    if (typeof clean === "string") return clip(clean, outputLimit);
     if (clean == null) return "";
 
     // Pi tool result 常见：{ content: [{ type: "text", text: "..." }, ...] }
     const obj = asRecord(clean);
     if (obj) {
-      if (typeof obj.text === "string") return clip(obj.text, OUTPUT_LIMIT);
-      if (typeof obj.output === "string") return clip(obj.output, OUTPUT_LIMIT);
-      if (typeof obj.message === "string") return clip(obj.message, OUTPUT_LIMIT);
-      if (typeof obj.error === "string") return clip(obj.error, OUTPUT_LIMIT);
+      if (typeof obj.text === "string") return clip(obj.text, outputLimit);
+      if (typeof obj.output === "string") return clip(obj.output, outputLimit);
+      if (typeof obj.message === "string") return clip(obj.message, outputLimit);
+      if (typeof obj.error === "string") return clip(obj.error, outputLimit);
 
       const content = obj.content;
-      if (typeof content === "string") return clip(content, OUTPUT_LIMIT);
+      if (typeof content === "string") return clip(content, outputLimit);
       if (Array.isArray(content)) {
         const texts: string[] = [];
         for (const item of content) {
@@ -152,7 +164,7 @@ export function formatToolOutput(result: unknown): string {
           if (typeof block.text === "string") texts.push(block.text);
           else if (block.type === "image") texts.push("[image]");
         }
-        if (texts.length) return clip(texts.join("\n"), OUTPUT_LIMIT);
+        if (texts.length) return clip(texts.join("\n"), outputLimit);
       }
 
       // details 类噪声字段跳过，只留主字段摘要
@@ -165,22 +177,29 @@ export function formatToolOutput(result: unknown): string {
           pairs.push(`${key}=${item}`);
         }
       }
-      if (pairs.length) return clip(pairs.join(" "), OUTPUT_LIMIT);
+      if (pairs.length) return clip(pairs.join(" "), outputLimit);
     }
 
     if (Array.isArray(clean)) {
-      return clip(JSON.stringify(clean), OUTPUT_LIMIT);
+      return clip(JSON.stringify(clean), outputLimit);
     }
 
-    return clip(JSON.stringify(clean), OUTPUT_LIMIT);
+    return clip(JSON.stringify(clean), outputLimit);
   } catch {
-    return clip(String(result), OUTPUT_LIMIT);
+    return clip(String(result), outputLimit);
   }
 }
 
 export class ToolTracker {
   private readonly steps = new Map<string, ToolStep>();
   private readonly order: string[] = [];
+  private readonly detailLimit: number;
+  private readonly outputLimit: number;
+
+  constructor(limits: ToolTrackerLimits = {}) {
+    this.detailLimit = limits.detailChars ?? DEFAULT_DETAIL_LIMIT;
+    this.outputLimit = limits.outputChars ?? DEFAULT_OUTPUT_LIMIT;
+  }
 
   private ensure(id: string): ToolStep {
     let step = this.steps.get(id);
@@ -204,14 +223,14 @@ export class ToolTracker {
   start(id: string, name: string, args: unknown): void {
     const step = this.ensure(id);
     step.name = name;
-    step.detail = formatToolDetail(name, args);
+    step.detail = formatToolDetail(name, args, this.detailLimit);
     step.orphan = false;
     if (step.startedAt === 0) step.startedAt = Date.now();
   }
 
   update(id: string, result: unknown): boolean {
     const created = !this.steps.has(id);
-    this.ensure(id).output = formatToolOutput(result);
+    this.ensure(id).output = formatToolOutput(result, this.outputLimit);
     return created;
   }
 
@@ -219,7 +238,7 @@ export class ToolTracker {
     const created = !this.steps.has(id);
     const step = this.ensure(id);
     step.status = isError ? "error" : "success";
-    step.output = formatToolOutput(result);
+    step.output = formatToolOutput(result, this.outputLimit);
     step.elapsedMs = Math.max(0, Date.now() - step.startedAt);
     return created;
   }

@@ -29,7 +29,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { FeishuClient } from "./feishu-client.js";
-import type { FeishuConfig, InboundMessageContext, InboundResource } from "./types.js";
+import type { FeishuConfig, FooterConfig, FooterFieldId, InboundMessageContext, InboundResource } from "./types.js";
 import { accessRiskWarning, evaluateAccess } from "./access/policy.js";
 import { StreamingCardManager } from "./streaming/card-manager.js";
 import { MetricsCollector, formatMetrics } from "./monitoring/metrics.js";
@@ -89,9 +89,14 @@ function readFeishuFromSettingsFile(filePath: string): Record<string, unknown> {
       requireMentionInGroup: fs.requireMentionInGroup ?? fs.require_mention_in_group,
       streamingPanelExpanded: fs.streamingPanelExpanded ?? fs.streaming_panel_expanded,
       maxAnswerElementChars: fs.maxAnswerElementChars ?? fs.max_answer_element_chars,
+      maxReasoningChars: fs.maxReasoningChars ?? fs.max_reasoning_chars,
+      maxToolDetailChars: fs.maxToolDetailChars ?? fs.max_tool_detail_chars,
+      maxToolOutputChars: fs.maxToolOutputChars ?? fs.max_tool_output_chars,
+      printFrequencyMs: fs.printFrequencyMs ?? fs.print_frequency_ms,
       clarifyTimeoutSec: fs.clarifyTimeoutSec ?? fs.clarify_timeout_sec,
       monitoringEnabled: fs.monitoringEnabled ?? fs.monitoring_enabled,
       streamingTransport: fs.streamingTransport ?? fs.streaming_transport,
+      footer: fs.footer,
     };
   } catch {
     return {};
@@ -122,6 +127,23 @@ function loadConfig(): FeishuConfig {
     if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
     return [];
   };
+  const parseFooter = (value: unknown): FooterConfig | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const obj = value as Record<string, unknown>;
+    const showRaw = obj.showFooter ?? obj.show_footer;
+    const linesRaw = obj.lines;
+    const footer: FooterConfig = {};
+    if (typeof showRaw === "boolean") footer.showFooter = showRaw;
+    else if (showRaw === "true" || showRaw === "1") footer.showFooter = true;
+    else if (showRaw === "false" || showRaw === "0") footer.showFooter = false;
+    if (Array.isArray(linesRaw)) {
+      footer.lines = linesRaw
+        .filter((row): row is unknown[] => Array.isArray(row))
+        .map((row) => row.filter((item): item is FooterFieldId => typeof item === "string"));
+    }
+    if (footer.showFooter === undefined && footer.lines === undefined) return undefined;
+    return footer;
+  };
 
   const domain = (process.env.FEISHU_DOMAIN || stringValue(s.domain) || "feishu") as "feishu" | "lark";
 
@@ -144,9 +166,14 @@ function loadConfig(): FeishuConfig {
     requireMentionInGroup: booleanValue(process.env.FEISHU_REQUIRE_MENTION_IN_GROUP ?? s.requireMentionInGroup, false),
     streamingPanelExpanded: booleanValue(process.env.FEISHU_STREAMING_PANEL_EXPANDED ?? s.streamingPanelExpanded, false),
     maxAnswerElementChars: numberValue(process.env.FEISHU_MAX_ANSWER_ELEMENT_CHARS ?? s.maxAnswerElementChars, 30000),
+    maxReasoningChars: numberValue(process.env.FEISHU_MAX_REASONING_CHARS ?? s.maxReasoningChars, 3500),
+    maxToolDetailChars: numberValue(process.env.FEISHU_MAX_TOOL_DETAIL_CHARS ?? s.maxToolDetailChars, 500),
+    maxToolOutputChars: numberValue(process.env.FEISHU_MAX_TOOL_OUTPUT_CHARS ?? s.maxToolOutputChars, 800),
+    printFrequencyMs: numberValue(process.env.FEISHU_PRINT_FREQUENCY_MS ?? s.printFrequencyMs, 70),
     clarifyTimeoutSec: numberValue(process.env.FEISHU_CLARIFY_TIMEOUT_SEC ?? s.clarifyTimeoutSec, 300),
     monitoringEnabled: booleanValue(process.env.FEISHU_MONITORING_ENABLED ?? s.monitoringEnabled, true),
     streamingTransport: (process.env.FEISHU_STREAMING_TRANSPORT || stringValue(s.streamingTransport) || "auto") as "auto" | "cardkit" | "im_patch",
+    footer: parseFooter(s.footer),
   };
 }
 
@@ -512,6 +539,11 @@ export default function (pi: ExtensionAPI) {
       maxThinkingRounds: config.maxThinkingRounds ?? 20,
       streamingPanelExpanded: config.streamingPanelExpanded ?? false,
       maxAnswerElementChars: Math.max(1000, config.maxAnswerElementChars ?? 30000),
+      maxReasoningChars: Math.max(200, config.maxReasoningChars ?? 3500),
+      maxToolDetailChars: Math.max(50, config.maxToolDetailChars ?? 500),
+      maxToolOutputChars: Math.max(50, config.maxToolOutputChars ?? 800),
+      printFrequencyMs: Math.max(20, Math.min(1000, config.printFrequencyMs ?? 70)),
+      footer: config.footer,
     }, metrics);
     clarify = new ClarifyManager(client);
 

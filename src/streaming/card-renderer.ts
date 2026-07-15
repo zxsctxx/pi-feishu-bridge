@@ -1,3 +1,4 @@
+import type { FooterConfig, FooterFieldId } from "../types.js";
 import type { CardSession } from "./card-session.js";
 import type { ToolStep } from "./tool-tracker.js";
 
@@ -10,6 +11,31 @@ export const FOOTER_ELEMENT_ID = "footer_metrics";
 export const LOADING_HINT_ELEMENT_ID = "context_loading_hint";
 export const LOADING_ELEMENT_ID = "loading_icon";
 
+/** 默认两行布局，保持与 2.0 既有行为一致 */
+export const DEFAULT_FOOTER_LINES: FooterFieldId[][] = [
+  ["status", "elapsed", "model", "api_calls"],
+  ["tokens", "context", "cache", "error"],
+];
+
+const FOOTER_FIELD_ALIASES: Record<string, FooterFieldId> = {
+  status: "status",
+  elapsed: "elapsed",
+  duration: "elapsed",
+  time: "elapsed",
+  model: "model",
+  api: "api_calls",
+  api_calls: "api_calls",
+  apicalls: "api_calls",
+  tokens: "tokens",
+  token: "tokens",
+  context: "context",
+  cache: "cache",
+  error: "error",
+  cost: "cost",
+  stop_reason: "stop_reason",
+  stopreason: "stop_reason",
+};
+
 export interface CardRenderOptions {
   showThinking: boolean;
   panelExpanded: boolean;
@@ -18,12 +44,22 @@ export interface CardRenderOptions {
   maxThinkingRounds: number;
   printStrategy: "fast" | "delay";
   printStep: number;
+  /** CardKit print_frequency_ms，默认 70 */
+  printFrequencyMs?: number;
+  /** 单轮推理正文展示上限，默认 3500 */
+  maxReasoningChars?: number;
+  /** 工具 detail 展示上限，默认 500 */
+  maxToolDetailChars?: number;
+  /** 工具 output 展示上限，默认 800 */
+  maxToolOutputChars?: number;
+  /** 页脚布局；未配置时用 DEFAULT_FOOTER_LINES */
+  footer?: FooterConfig;
 }
 
-/** 推理正文上限（单轮）；工具 detail/output 另有更短展示上限 */
-const REASONING_LIMIT = 3500;
-const TOOL_DETAIL_LIMIT = 500;
-const TOOL_OUTPUT_LIMIT = 800;
+export const DEFAULT_REASONING_CHARS = 3500;
+export const DEFAULT_TOOL_DETAIL_CHARS = 500;
+export const DEFAULT_TOOL_OUTPUT_CHARS = 800;
+export const DEFAULT_PRINT_FREQUENCY_MS = 70;
 
 const truncate = (text: string, limit: number) =>
   text.length > limit ? `${text.slice(0, limit)}…` : text;
@@ -93,34 +129,42 @@ function notationLine(content: string): Record<string, unknown> {
 }
 
 /** 工具：标题(lark_md) + detail(plain_text) + output(安全 fence) */
-function buildToolElements(step: ToolStep): Record<string, unknown>[] {
+function buildToolElements(
+  step: ToolStep,
+  detailLimit: number,
+  outputLimit: number,
+): Record<string, unknown>[] {
   const elapsed = step.elapsedMs ? ` · ${(step.elapsedMs / 1000).toFixed(1)}s` : "";
   const title = `${statusIcon(step.status)} ${escapeMd(step.name)}${elapsed}`;
   const out: Record<string, unknown>[] = [mdTitle(title, statusColor(step.status))];
 
   const detail = step.detail?.trim();
-  if (detail) out.push(plainIndented(truncate(detail, TOOL_DETAIL_LIMIT)));
+  if (detail) out.push(plainIndented(truncate(detail, detailLimit)));
 
   // 输出已是人类可读一行；plain_text 避免再被当成 JSON 代码块
   const output = step.output?.trim();
-  if (output) out.push(plainIndented(truncate(output, TOOL_OUTPUT_LIMIT)));
+  if (output) out.push(plainIndented(truncate(output, outputLimit)));
   return out;
 }
 
 /** 推理：标题 + 正文(lark_md，独立元素，不与工具 JSON 拼成一大段 markdown) */
-function buildReasoningElements(index: number, text: string, showBody: boolean): Record<string, unknown>[] {
+function buildReasoningElements(
+  index: number,
+  text: string,
+  showBody: boolean,
+  reasoningLimit: number,
+): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [mdTitle(`💭 推理 ${index}`)];
   if (showBody && text.trim()) {
-    out.push(mdIndented(truncate(text, REASONING_LIMIT)));
+    out.push(mdIndented(truncate(text, reasoningLimit)));
   }
   return out;
 }
 
-/** Agent 保留英文；轮次/工具/耗时用中文单位。 */
+/** Agent 保留英文；轮次/工具/耗时用中文单位。耗时 = 过程活动墙钟，不是整轮 footer 时间。 */
 export function buildPanelTitle(session: CardSession, toolCount: number, terminal = false): string {
   const rounds = session.thinkingRounds.length + (session.currentThinking ? 1 : 0);
-  const end = terminal ? (session.completedAt ?? Date.now()) : Date.now();
-  const elapsed = ((end - session.createdAt) / 1000).toFixed(1);
+  const elapsed = session.loopSeconds(terminal).toFixed(1);
   return `Agent loop · ${rounds} 轮 · ${toolCount} 工具 · ${elapsed}s`;
 }
 
@@ -139,6 +183,9 @@ export function buildPanelElement(
   const thinkingStart = Math.max(0, session.thinkingRounds.length - options.maxThinkingRounds);
   const tools = session.tools.list(options.maxToolSteps);
   const visible = new Set(tools.steps.map((step) => step.toolCallId));
+  const reasoningLimit = options.maxReasoningChars ?? DEFAULT_REASONING_CHARS;
+  const detailLimit = options.maxToolDetailChars ?? DEFAULT_TOOL_DETAIL_CHARS;
+  const outputLimit = options.maxToolOutputChars ?? DEFAULT_TOOL_OUTPUT_CHARS;
 
   if (thinkingStart) {
     children.push(notationLine(`💭 早期 ${thinkingStart} 轮推理已折叠`));
@@ -150,10 +197,10 @@ export function buildPanelElement(
   for (const event of session.panelEvents) {
     if (event.type === "thinking" && event.index >= thinkingStart) {
       const body = options.showThinking ? (session.thinkingRounds[event.index] ?? "") : "";
-      children.push(...buildReasoningElements(event.index + 1, body, options.showThinking));
+      children.push(...buildReasoningElements(event.index + 1, body, options.showThinking, reasoningLimit));
     } else if (event.type === "tool" && visible.has(event.toolCallId)) {
       const step = session.tools.get(event.toolCallId);
-      if (step) children.push(...buildToolElements(step));
+      if (step) children.push(...buildToolElements(step, detailLimit, outputLimit));
     }
   }
 
@@ -163,6 +210,7 @@ export function buildPanelElement(
         session.thinkingRounds.length + 1,
         session.currentThinking,
         options.showThinking,
+        reasoningLimit,
       ),
     );
   }
@@ -214,7 +262,7 @@ export function buildCreatingCard(options: CardRenderOptions): Record<string, un
       update_multi: true,
       streaming_mode: true,
       streaming_config: {
-        print_frequency_ms: { default: 70 },
+        print_frequency_ms: { default: options.printFrequencyMs ?? DEFAULT_PRINT_FREQUENCY_MS },
         print_step: { default: options.printStep },
         print_strategy: options.printStrategy,
       },
@@ -242,7 +290,7 @@ export function buildTerminalStatus(session: CardSession): Record<string, unknow
   return {
     tag: "markdown",
     element_id: STATUS_ELEMENT_ID,
-    content: `---\n${status} · ${(((session.completedAt ?? Date.now()) - session.createdAt) / 1000).toFixed(1)}s${error}`,
+    content: `---\n${status} · ${session.wallClockSeconds().toFixed(1)}s${error}`,
   };
 }
 
@@ -256,51 +304,115 @@ function compactNumber(value: number | null | undefined): string {
   return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
-export function buildFooter(session: CardSession): Record<string, unknown> {
-  const f = session.footer;
-  const status =
-    session.phase === "completed"
-      ? "已完成"
-      : session.phase === "aborted"
-        ? "已停止"
-        : session.phase === "terminated"
-          ? "已终止"
-          : "失败";
-  const duration = (((session.completedAt ?? Date.now()) - session.createdAt) / 1000).toFixed(1);
+function resolveFooterFieldId(raw: unknown): FooterFieldId | null {
+  if (typeof raw !== "string") return null;
+  const key = raw.trim().toLowerCase().replace(/-/g, "_");
+  return FOOTER_FIELD_ALIASES[key] ?? null;
+}
 
-  // 第二行展示：↑ input ↓ output 💭 reasoning · 上下文 · 缓存 read/prompt (hit%)
-  // 字段仍来自 footer 既有累计值，不在此重新统计
-  const input = f.inputTokens ?? 0;
-  const output = f.outputTokens ?? 0;
-  const cacheRead = f.cacheRead ?? 0;
-  const cacheWrite = f.cacheWrite ?? 0;
-  const promptTokens = input + cacheRead + cacheWrite;
-
-  const tokenParts = [`↑ ${compactNumber(input)}`, `↓ ${compactNumber(output)}`];
-  if (typeof f.reasoningTokens === "number" && f.reasoningTokens > 0) {
-    tokenParts.push(`💭 ${compactNumber(f.reasoningTokens)}`);
+/**
+ * 规范化 footer.lines：外层 = 行，内层 = 同行字段。
+ * 过滤未知字段与空行；空配置回退默认两行。
+ */
+export function normalizeFooterLines(lines: unknown): FooterFieldId[][] {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    return DEFAULT_FOOTER_LINES.map((line) => [...line]);
   }
-  const tokens = tokenParts.join(" ");
+  const out: FooterFieldId[][] = [];
+  for (const row of lines) {
+    if (!Array.isArray(row)) continue;
+    const fields = row
+      .map((item) => resolveFooterFieldId(item))
+      .filter((id): id is FooterFieldId => id !== null);
+    if (fields.length > 0) out.push(fields);
+  }
+  return out.length > 0 ? out : DEFAULT_FOOTER_LINES.map((line) => [...line]);
+}
 
-  const context = f.contextWindow
-    ? `${compactNumber(f.contextTokens)}/${compactNumber(f.contextWindow)} (${Math.round(f.contextPercent ?? ((f.contextTokens ?? 0) / f.contextWindow * 100))}%)`
-    : "?";
-
-  let cache = "";
-  if (cacheRead > 0 || cacheWrite > 0) {
-    // 与分子/分母同一口径：会话累计 cacheRead / (input+cacheRead+cacheWrite)
-    // 不用 footer.cacheHitPercent（那是最后一次请求的 CH，会和累计分数不一致）
+function formatFooterField(id: FooterFieldId, session: CardSession): string | null {
+  const f = session.footer;
+  if (id === "status") {
+    if (session.phase === "completed") return "已完成";
+    if (session.phase === "aborted") return "已停止";
+    if (session.phase === "terminated") return "已终止";
+    return "失败";
+  }
+  if (id === "elapsed") {
+    // footer：整轮墙钟（建卡 → 终态），通常 ≥ 过程面板时间
+    return `耗时 ${session.wallClockSeconds().toFixed(1)}s`;
+  }
+  if (id === "model") return f.model ?? "未知模型";
+  if (id === "api_calls") return `API ${f.apiCalls}`;
+  if (id === "tokens") {
+    const input = f.inputTokens ?? 0;
+    const output = f.outputTokens ?? 0;
+    const parts = [`↑ ${compactNumber(input)}`, `↓ ${compactNumber(output)}`];
+    if (typeof f.reasoningTokens === "number" && f.reasoningTokens > 0) {
+      parts.push(`💭 ${compactNumber(f.reasoningTokens)}`);
+    }
+    return parts.join(" ");
+  }
+  if (id === "context") {
+    if (!f.contextWindow) return "上下文 ?";
+    const pct = Math.round(
+      f.contextPercent ?? ((f.contextTokens ?? 0) / f.contextWindow) * 100,
+    );
+    return `上下文 ${compactNumber(f.contextTokens)}/${compactNumber(f.contextWindow)} (${pct}%)`;
+  }
+  if (id === "cache") {
+    const input = f.inputTokens ?? 0;
+    const cacheRead = f.cacheRead ?? 0;
+    const cacheWrite = f.cacheWrite ?? 0;
+    if (cacheRead <= 0 && cacheWrite <= 0) return null;
+    // 会话累计 cacheRead / (input+cacheRead+cacheWrite)，不用单次 CH
+    const promptTokens = input + cacheRead + cacheWrite;
     const denom = promptTokens > 0 ? promptTokens : cacheRead + cacheWrite;
     const hit = denom > 0 ? (cacheRead / denom) * 100 : 0;
-    cache = ` · 缓存 ${compactNumber(cacheRead)}/${compactNumber(denom)} (${Math.round(hit)}%)`;
+    return `缓存 ${compactNumber(cacheRead)}/${compactNumber(denom)} (${Math.round(hit)}%)`;
   }
+  if (id === "error") {
+    return session.errorMessage ? truncate(session.errorMessage, 300) : null;
+  }
+  if (id === "cost") {
+    if (typeof f.cost !== "number" || !Number.isFinite(f.cost)) return null;
+    return `$${f.cost.toFixed(4)}`;
+  }
+  if (id === "stop_reason") {
+    return f.stopReason ? `停止 ${f.stopReason}` : null;
+  }
+  return null;
+}
 
-  const error = session.errorMessage ? ` · ${truncate(session.errorMessage, 300)}` : "";
+/** 按 lines 模板拼页脚；空值字段跳过，空行丢弃 */
+export function formatFooterContent(
+  session: CardSession,
+  lines: FooterFieldId[][] = DEFAULT_FOOTER_LINES,
+): string {
+  const rendered: string[] = [];
+  for (const row of lines) {
+    const parts: string[] = [];
+    for (const id of row) {
+      const text = formatFooterField(id, session);
+      if (text) parts.push(text);
+    }
+    if (parts.length > 0) rendered.push(parts.join(" · "));
+  }
+  return rendered.join("\n");
+}
+
+export function buildFooter(
+  session: CardSession,
+  footerConfig?: FooterConfig,
+): Record<string, unknown> | null {
+  if (footerConfig?.showFooter === false) return null;
+  const lines = normalizeFooterLines(footerConfig?.lines);
+  const content = formatFooterContent(session, lines);
+  if (!content.trim()) return null;
   return {
     tag: "markdown",
     element_id: FOOTER_ELEMENT_ID,
     text_size: "notation",
-    content: `${status} · 耗时 ${duration}s · ${f.model ?? "未知模型"} · API ${f.apiCalls}\n${tokens} · 上下文 ${context}${cache}${error}`,
+    content,
   };
 }
 
@@ -348,10 +460,19 @@ export function buildFallbackCard(
         { tag: "markdown", content: status },
         buildPanelElement(session, options, terminal),
         { tag: "markdown", content: session.answer || "正在处理…" },
-        ...(terminal ? [buildFooter(session)] : []),
+        ...(terminal ? footerElements(session, options.footer) : []),
       ],
     },
   };
+}
+
+/** buildFooter 可能返回 null（showFooter=false 或内容为空） */
+export function footerElements(
+  session: CardSession,
+  footerConfig?: FooterConfig,
+): Record<string, unknown>[] {
+  const footer = buildFooter(session, footerConfig);
+  return footer ? [footer] : [];
 }
 
 export function addElementsAction(

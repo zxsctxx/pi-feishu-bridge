@@ -53,10 +53,49 @@ pi install ./pi-feishu-bridge-2.0.12.tgz
 | `streamingTransport` | `auto` | `auto` 探测 CardKit；`cardkit` 强制原生；`im_patch` 使用 1.x 兼容流式 |
 | `showThinking` | false | 默认不展示推理正文；兼容 `show_thinking`、`showReasoning`、`show_reasoning` |
 | `maxAnswerElementChars` | 30000 | 超过后创建“续”卡 |
+| `maxReasoningChars` | 3500 | 单轮推理正文展示上限 |
+| `maxToolDetailChars` | 500 | 工具参数/detail 展示与存储上限 |
+| `maxToolOutputChars` | 800 | 工具输出展示与存储上限 |
+| `printFrequencyMs` | 70 | CardKit `print_frequency_ms`（20–1000） |
 | `accessPolicy` | `open` | 生产使用 `allowlist` |
 | `allowedChatIds` / `allowedOpenIds` | `[]` | 两者均配置时必须同时匹配 |
 | `requireMentionInGroup` | false | 生产群聊建议 true |
 | `clarifyTimeoutSec` | 300 | `ask_feishu` 默认等待时间 |
+| `footer.showFooter` | true | 是否在终态卡片显示页脚 |
+| `footer.lines` | 见下 | 二维数组：外层=行，内层=同行字段 |
+
+### 页脚布局（`footer.lines`）
+
+二维数组，无需魔法换行符：
+- 外层每一项 = 一行
+- 内层字段用 ` · ` 连接
+
+可用字段：`status`、`elapsed`、`model`、`api_calls`、`tokens`、`context`、`cache`、`error`、`cost`、`stop_reason`（`duration`/`api-calls` 等别名可用）。
+
+默认两行：
+
+```json
+{
+  "feishu": {
+    "footer": {
+      "showFooter": true,
+      "lines": [
+        ["status", "elapsed", "model", "api_calls"],
+        ["tokens", "context", "cache", "error"]
+      ]
+    }
+  }
+}
+```
+
+精简示例：
+
+```json
+"lines": [
+  ["status", "elapsed"],
+  ["tokens", "context"]
+]
+```
 
 ## 命令
 

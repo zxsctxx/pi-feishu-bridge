@@ -8,16 +8,27 @@
     "showThinking": false,
     "printStrategy": "delay",
     "printStep": 4,
+    "printFrequencyMs": 70,
     "panelExpanded": false,
     "streamingPanelExpanded": false,
     "maxToolSteps": 20,
     "maxThinkingRounds": 20,
     "maxAnswerElementChars": 30000,
+    "maxReasoningChars": 3500,
+    "maxToolDetailChars": 500,
+    "maxToolOutputChars": 800,
     "accessPolicy": "allowlist",
     "allowedChatIds": ["oc_xxx"],
     "allowedOpenIds": ["ou_xxx"],
     "requireMentionInGroup": true,
     "clarifyTimeoutSec": 300,
-    "monitoringEnabled": true
+    "monitoringEnabled": true,
+    "footer": {
+      "showFooter": true,
+      "lines": [
+        ["status", "elapsed", "model", "api_calls"],
+        ["tokens", "context", "cache", "error"]
+      ]
+    }
   }
 }

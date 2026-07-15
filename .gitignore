@@ -18,6 +18,9 @@ coverage/
 .env.*
 !.env.example
 
+# Example config (make a copy, don't commit real credentials)
+/examples/settings.json
+
 # Logs
 logs/
 *.log

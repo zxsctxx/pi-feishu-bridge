@@ -4,6 +4,30 @@
  * 使用飞书官方 Bot API（WebSocket 长连接 + REST API）
  */
 
+/** 页脚可配置字段（与终端语义对齐） */
+export type FooterFieldId =
+  | "status"
+  | "elapsed"
+  | "model"
+  | "api_calls"
+  | "tokens"
+  | "context"
+  | "cache"
+  | "error"
+  | "cost"
+  | "stop_reason";
+
+/**
+ * 页脚布局配置。
+ * `lines` 为二维数组：外层 = 行，内层 = 同行字段（用 ` · ` 连接）。
+ * 默认：
+ *   [[status, elapsed, model, api_calls], [tokens, context, cache, error]]
+ */
+export interface FooterConfig {
+  showFooter?: boolean;
+  lines?: FooterFieldId[][];
+}
+
 /** 飞书客户端配置 */
 export interface FeishuConfig {
   /** 飞书 App ID */
@@ -29,9 +53,19 @@ export interface FeishuConfig {
   requireMentionInGroup?: boolean;
   streamingPanelExpanded?: boolean;
   maxAnswerElementChars?: number;
+  /** 单轮推理正文展示上限，默认 3500 */
+  maxReasoningChars?: number;
+  /** 工具 detail 展示/存储上限，默认 500 */
+  maxToolDetailChars?: number;
+  /** 工具 output 展示/存储上限，默认 800 */
+  maxToolOutputChars?: number;
+  /** CardKit 流式 print_frequency_ms，默认 70 */
+  printFrequencyMs?: number;
   clarifyTimeoutSec?: number;
   monitoringEnabled?: boolean;
   streamingTransport?: "auto" | "cardkit" | "im_patch";
+  /** 卡片页脚配置；未配置时使用默认两行布局 */
+  footer?: FooterConfig;
 }
 
 export interface InboundResource {
@@ -73,7 +107,12 @@ export interface FeishuSettingsSection {
   requireMentionInGroup?: boolean;
   streamingPanelExpanded?: boolean;
   maxAnswerElementChars?: number;
+  maxReasoningChars?: number;
+  maxToolDetailChars?: number;
+  maxToolOutputChars?: number;
+  printFrequencyMs?: number;
   clarifyTimeoutSec?: number;
   monitoringEnabled?: boolean;
   streamingTransport?: "auto" | "cardkit" | "im_patch";
+  footer?: FooterConfig;
 }
