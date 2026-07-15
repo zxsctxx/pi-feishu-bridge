@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { FeishuClient } from "./feishu-client.js";
 import type { FeishuConfig, FooterConfig, FooterFieldId, InboundMessageContext, InboundResource } from "./types.js";
-import { accessRiskWarning, evaluateAccess } from "./access/policy.js";
+import { accessRiskWarning, evaluateAccess, formatAccessDeniedMessage, DEFAULT_ACCESS_POLICY } from "./access/policy.js";
 import { StreamingCardManager } from "./streaming/card-manager.js";
 import { MetricsCollector, formatMetrics } from "./monitoring/metrics.js";
 import { formatDoctor, runDoctor } from "./monitoring/doctor.js";
@@ -160,7 +160,7 @@ function loadConfig(): FeishuConfig {
     panelExpanded: booleanValue(process.env.FEISHU_PANEL_EXPANDED ?? s.panelExpanded, false),
     maxToolSteps: numberValue(process.env.FEISHU_MAX_TOOL_STEPS ?? s.maxToolSteps, 20),
     maxThinkingRounds: numberValue(process.env.FEISHU_MAX_THINKING_ROUNDS ?? s.maxThinkingRounds, 20),
-    accessPolicy: (process.env.FEISHU_ACCESS_POLICY || stringValue(s.accessPolicy) || "open") as "open" | "allowlist",
+    accessPolicy: (process.env.FEISHU_ACCESS_POLICY || stringValue(s.accessPolicy) || DEFAULT_ACCESS_POLICY) as "open" | "allowlist",
     allowedChatIds: stringList(process.env.FEISHU_ALLOWED_CHAT_IDS ?? s.allowedChatIds),
     allowedOpenIds: stringList(process.env.FEISHU_ALLOWED_OPEN_IDS ?? s.allowedOpenIds),
     requireMentionInGroup: booleanValue(process.env.FEISHU_REQUIRE_MENTION_IN_GROUP ?? s.requireMentionInGroup, false),
@@ -583,7 +583,14 @@ export default function (pi: ExtensionAPI) {
   async function handleFeishuMessage(context: InboundMessageContext): Promise<void> {
     const decision = evaluateAccess(context, config);
     if (!decision.allowed) {
-      await client?.sendMessage(context.chatId, "无权访问此机器人。", context.messageId);
+      console.warn(
+        `[pi-feishu] access denied reason=${decision.reason ?? "unknown"} chatId=${context.chatId} openId=${context.senderOpenId}`,
+      );
+      await client?.sendMessage(
+        context.chatId,
+        formatAccessDeniedMessage(context, decision.reason),
+        context.messageId,
+      );
       return;
     }
 
@@ -710,9 +717,9 @@ export default function (pi: ExtensionAPI) {
         else if (action === "doctor") { const connected = client?.getStatus() === "connected"; const cardkit = connected ? await client!.checkCardKitAvailability() : null; await client?.sendMessage(chatId, formatDoctor(runDoctor(config, connected, cardkit)), msgId); }
         else if (action === "status") {
           const warning = accessRiskWarning(config);
-          await client?.sendMessage(chatId, `${PRODUCT_NAME} ${PRODUCT_VERSION} (${PRODUCT_ID})\n飞书连接: ${client?.getStatus() ?? "未启动"}\n访问策略: ${config.accessPolicy ?? "open"}${warning ? `\n${warning}` : ""}`, msgId);
+          await client?.sendMessage(chatId, `${PRODUCT_NAME} ${PRODUCT_VERSION} (${PRODUCT_ID})\n飞书连接: ${client?.getStatus() ?? "未启动"}\n访问策略: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}${warning ? `\n${warning}` : ""}`, msgId);
         } else if (action === "config") {
-          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nStreaming transport: ${config.streamingTransport ?? "auto"}\nShow thinking: ${config.showThinking ?? false}\nAccess policy: ${config.accessPolicy ?? "open"}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
+          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nStreaming transport: ${config.streamingTransport ?? "auto"}\nShow thinking: ${config.showThinking ?? false}\nAccess policy: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
         } else if (action === "config reload") {
           const result = await configReload.request(ctxRef?.isIdle() ?? true, async () => { config = loadConfig(); await startFeishuClient(); });
           await client?.sendMessage(chatId, result === "deferred" ? "配置将在当前 Agent 完全 settled 后重载。" : "配置已重载。", msgId);

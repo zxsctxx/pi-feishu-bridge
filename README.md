@@ -15,7 +15,7 @@
 ## 安装
 
 ```bash
-pi install ./pi-feishu-bridge-2.0.12.tgz
+pi install ./pi-feishu-bridge-2.0.16.tgz
 ```
 
 兼容范围固定为 `@earendil-works/pi-coding-agent >=0.80.6 <0.81.0`，不会自动匹配 Pi 0.81+。
@@ -24,24 +24,41 @@ pi install ./pi-feishu-bridge-2.0.12.tgz
 
 一个 Pi 扩展实例只绑定当前一个 Pi session。多个飞书 chat 进入同一进程时会共享同一 Pi 上下文，项目不伪造多会话隔离。生产环境应让一个 Pi 进程只服务一个受信任用户或聊天边界；真正多租户应分别启动 Pi 进程。
 
-`accessPolicy: "open"` 只用于兼容和开发，启动、status、doctor 都会显示高风险告警。生产建议：
+**默认 `accessPolicy` 为 `allowlist`**（空名单 = 拒绝所有人）。`open` 仅建议本机开发，启动 / status / doctor 会显示高风险告警。
+
+### 如何配置 allowlist 才能对话
+
+1. 先启动 Bot，用你的账号给 Bot 发任意消息。
+2. 若未授权，Bot 会回复你的 **open_id**（`ou_…`）和当前 **chat_id**（`oc_…`）。
+3. 写入 `~/.pi/agent/settings.json`（或项目 `.pi/settings.json`）后 `/feishu config reload`：
 
 ```json
 {
   "feishu": {
     "accessPolicy": "allowlist",
-    "allowedChatIds": ["oc_xxx"],
-    "allowedOpenIds": ["ou_xxx"],
+    "allowedOpenIds": ["ou_你的open_id"],
+    "allowedChatIds": ["oc_你的chat_id"],
     "requireMentionInGroup": true
   }
 }
 ```
 
-未授权消息在命令路由、媒体下载、消息队列和 Pi 上下文之前被拒绝，响应不包含模型、App ID 或运行状态。
+匹配规则：
+
+| 配置 | 效果 |
+|------|------|
+| 只配 `allowedOpenIds` | 该用户在任意会话可聊 |
+| 只配 `allowedChatIds` | 该会话内任意用户可聊 |
+| **两者都配** | 必须 **同时** 匹配（更严） |
+| 都为空 | 全部拒绝 |
+
+私聊一般只写 `allowedOpenIds` 即可；群聊建议两者都写，并开启 `requireMentionInGroup`。
+
+未授权消息在命令路由、媒体下载、消息队列和 Pi 上下文之前被拒绝。
 
 ## 配置
 
-配置来源优先级为 CLI、`FEISHU_*` 环境变量、项目 `.pi/settings.json`、全局 `~/.pi/agent/settings.json`。字段兼容 camelCase 与 snake_case。完整示例见 [examples/settings.json](examples/settings.json)。
+配置来源优先级为 CLI、`FEISHU_*` 环境变量、项目 `.pi/settings.json`、全局 `~/.pi/agent/settings.json`。字段兼容 camelCase 与 snake_case。完整示例见 [examples/settings.example.json](examples/settings.example.json)。
 
 关键字段：
 
@@ -57,8 +74,8 @@ pi install ./pi-feishu-bridge-2.0.12.tgz
 | `maxToolDetailChars` | 500 | 工具参数/detail 展示与存储上限 |
 | `maxToolOutputChars` | 800 | 工具输出展示与存储上限 |
 | `printFrequencyMs` | 70 | CardKit `print_frequency_ms`（20–1000） |
-| `accessPolicy` | `open` | 生产使用 `allowlist` |
-| `allowedChatIds` / `allowedOpenIds` | `[]` | 两者均配置时必须同时匹配 |
+| `accessPolicy` | `allowlist` | 默认白名单；开发可显式设 `open` |
+| `allowedChatIds` / `allowedOpenIds` | `[]` | 见上方匹配规则 |
 | `requireMentionInGroup` | false | 生产群聊建议 true |
 | `clarifyTimeoutSec` | 300 | `ask_feishu` 默认等待时间 |
 | `footer.showFooter` | true | 是否在终态卡片显示页脚 |

@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "license": "MIT",
+  "author": "zxsctxx",
   "keywords": [
     "pi-package",
     "pi",
@@ -18,7 +19,7 @@
   "files": [
     "src",
     "docs",
-    "examples",
+    "examples/settings.example.json",
     "README.md",
     "LICENSE"
   ],
