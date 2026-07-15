@@ -20,6 +20,7 @@
 
 import {
   AgentSession,
+  SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionCommandContext,
@@ -37,6 +38,12 @@ import { formatDoctor, runDoctor } from "./monitoring/doctor.js";
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from "./version.js";
 import { ClarifyManager } from "./clarify/manager.js";
 import { ConfigReloadCoordinator } from "./monitoring/reload.js";
+import {
+  formatResumeList,
+  resolveSessionFromArg,
+  sessionDisplayTitle,
+  type ResumeSessionInfo,
+} from "./session/resume.js";
 
 // ─── 常量 ─────────────────────────────────────────────
 
@@ -194,10 +201,29 @@ function takePendingFeishuNotify(): PendingFeishuNotify | null {
   return notify;
 }
 
-/** 内部命令名：仅供飞书斜杠经 sendUserMessage 触发，勿与内置 /new /reload 抢名 */
+/** 内部命令名：仅供飞书斜杠经 sendUserMessage 触发，勿与内置 /new /reload /resume 抢名 */
 const CMD_FEISHU_SESSION_NEW = "feishu-session-new";
 const CMD_FEISHU_RUNTIME_RELOAD = "feishu-runtime-reload";
-const INTERNAL_SESSION_COMMANDS = new Set([CMD_FEISHU_SESSION_NEW, CMD_FEISHU_RUNTIME_RELOAD]);
+const CMD_FEISHU_SESSION_RESUME = "feishu-session-resume";
+const INTERNAL_SESSION_COMMANDS = new Set([
+  CMD_FEISHU_SESSION_NEW,
+  CMD_FEISHU_RUNTIME_RELOAD,
+  CMD_FEISHU_SESSION_RESUME,
+]);
+
+/** switchSession 路径经 globalThis 传递，避免 Windows 路径空格被斜杠参数拆开 */
+const PENDING_RESUME_PATH_KEY = "__piFeishuBridgePendingResumePath";
+
+function setPendingResumePath(path: string | null): void {
+  (globalThis as Record<string, unknown>)[PENDING_RESUME_PATH_KEY] = path;
+}
+
+function takePendingResumePath(): string | null {
+  const g = globalThis as Record<string, unknown>;
+  const path = (g[PENDING_RESUME_PATH_KEY] as string | null | undefined) ?? null;
+  g[PENDING_RESUME_PATH_KEY] = null;
+  return path;
+}
 
 /** 与 TUI `/model pattern:level` 对齐的 thinking 后缀 */
 const THINKING_LEVELS = new Set([
@@ -682,7 +708,7 @@ export default function (pi: ExtensionAPI) {
 
   // ─── 斜杠命令处理 ──────────────────────────────────────
 
-  /** 为 /new /reload 做前置清理：中断流式、清空本聊天队列、abort Agent */
+  /** 为 /new /reload /resume 做前置清理：中断流式、清空本聊天队列、abort Agent */
   async function prepareRemoteSessionControl(chatId: string): Promise<void> {
     latestChatId = chatId;
     await clarify?.abort();
@@ -738,6 +764,79 @@ export default function (pi: ExtensionAPI) {
         await client?.sendMessage(chatId, "正在新建会话…", msgId);
         // newSession 仅在命令上下文可用；经 followUp 触发内部命令
         pi.sendUserMessage(`/${CMD_FEISHU_SESSION_NEW}`, { deliverAs: "followUp" });
+        break;
+      }
+
+      case "/resume": {
+        const arg = args.trim();
+        const listAll = arg.toLowerCase() === "all";
+        const cwd = ctxRef?.cwd;
+        const currentId = ctxRef?.sessionManager?.getSessionId?.() ?? null;
+
+        const loadSessions = async (all: boolean): Promise<ResumeSessionInfo[]> => {
+          if (all || !cwd) return SessionManager.listAll();
+          return SessionManager.list(cwd);
+        };
+
+        let sessions: ResumeSessionInfo[];
+        try {
+          sessions = await loadSessions(listAll);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          await client?.sendMessage(chatId, `列出会话失败：${detail}`, msgId);
+          break;
+        }
+
+        const scopeNote = listAll
+          ? "范围: 全部工作目录"
+          : cwd
+            ? "范围: 当前工作目录"
+            : undefined;
+
+        // 无参数或 all → 仅列表
+        if (!arg || listAll) {
+          await client?.sendMessage(
+            chatId,
+            formatResumeList(sessions, { currentId, scopeNote }),
+            msgId,
+          );
+          break;
+        }
+
+        let resolved = resolveSessionFromArg(sessions, arg);
+        // 非编号在本 cwd 未命中时回退全库（编号始终对应当前列表）
+        if (!resolved.ok && !/^\d+$/.test(arg) && cwd) {
+          try {
+            sessions = await loadSessions(true);
+            resolved = resolveSessionFromArg(sessions, arg);
+          } catch {
+            // 保留首次错误
+          }
+        }
+        if (!resolved.ok) {
+          await client?.sendMessage(chatId, resolved.error, msgId);
+          break;
+        }
+
+        if (currentId && resolved.session.id === currentId) {
+          await client?.sendMessage(
+            chatId,
+            `已在该会话中：${sessionDisplayTitle(resolved.session)}`,
+            msgId,
+          );
+          break;
+        }
+
+        const title = sessionDisplayTitle(resolved.session);
+        await prepareRemoteSessionControl(chatId);
+        setPendingResumePath(resolved.session.path);
+        setPendingFeishuNotify({
+          chatId,
+          text: `已恢复会话：${title}\n（${resolved.session.messageCount} 条消息）`,
+          at: Date.now(),
+        });
+        await client?.sendMessage(chatId, `正在恢复会话：${title}…`, msgId);
+        pi.sendUserMessage(`/${CMD_FEISHU_SESSION_RESUME}`, { deliverAs: "followUp" });
         break;
       }
 
@@ -911,6 +1010,7 @@ export default function (pi: ExtensionAPI) {
         const helpText = [
           "可用命令:",
           "  /new       - 新建 Pi 会话（清空上下文）",
+          "  /resume    - 列出/恢复历史会话（/resume · /resume 3 · /resume all）",
           "  /reload    - 热重载扩展/技能/主题等（等同终端 /reload）",
           "  /stop      - 中断当前处理，清空排队",
           "  /queue     - 查看排队状态",
@@ -1097,6 +1197,44 @@ export default function (pi: ExtensionAPI) {
           await client.sendMessage(pending.chatId, `新建会话失败：${detail}`);
         }
         ctx.ui.notify(`飞书远程 /new 失败: ${detail}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand(CMD_FEISHU_SESSION_RESUME, {
+    description: "[内部] 飞书远程恢复会话",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const sessionPath = takePendingResumePath();
+      if (!sessionPath) {
+        const pending = takePendingFeishuNotify();
+        if (pending && client) {
+          await client.sendMessage(pending.chatId, "恢复会话失败：未指定会话路径。");
+        }
+        ctx.ui.notify("飞书远程 /resume 缺少路径", "error");
+        return;
+      }
+      try {
+        if (!ctx.isIdle()) {
+          ctx.abort();
+          await ctx.waitForIdle();
+        }
+        const result = await ctx.switchSession(sessionPath);
+        if (result.cancelled) {
+          const pending = takePendingFeishuNotify();
+          if (pending && client) {
+            await client.sendMessage(pending.chatId, "恢复会话已取消（被扩展拦截）。");
+          }
+          ctx.ui.notify("飞书远程 /resume 已取消", "warning");
+          return;
+        }
+        // 成功后旧运行时已拆掉；成功文案由新实例 session_start 投递 pending notify
+      } catch (error) {
+        const pending = takePendingFeishuNotify();
+        const detail = error instanceof Error ? error.message : String(error);
+        if (pending && client) {
+          await client.sendMessage(pending.chatId, `恢复会话失败：${detail}`);
+        }
+        ctx.ui.notify(`飞书远程 /resume 失败: ${detail}`, "error");
       }
     },
   });

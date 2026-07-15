@@ -123,6 +123,7 @@ pi install ./pi-feishu-bridge-2.0.16.tgz
 | 命令 | 作用 |
 |------|------|
 | `/new` | 真正新建 Pi 会话（清空上下文；经内部命令调用 `ctx.newSession`） |
+| `/resume` | 列出/恢复历史会话（`/resume` 列表；`/resume 3` 按编号；`/resume <id前缀|名称>` 匹配；`/resume all` 全部工作目录） |
 | `/reload` | 等同终端 `/reload`（热重载扩展/技能/主题等；`/feishu config reload` 仅重载飞书配置） |
 | `/compact` | 压缩上下文 |
 | `/model` | 查看/切换模型；列表优先显示 `settings.enabledModels`；支持 `/model cpa/grok45`、`/model cpa/grok45:high` |
