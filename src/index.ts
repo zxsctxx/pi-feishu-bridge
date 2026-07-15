@@ -210,6 +210,96 @@ function formatModelRef(model: { provider: string; id: string; name?: string }):
   return model.name && model.name !== model.id ? `${base} (${model.name})` : base;
 }
 
+type ListedModel = { provider: string; id: string; name?: string };
+
+function readSettingsObject(filePath: string): Record<string, unknown> {
+  try {
+    if (!existsSync(filePath)) return {};
+    const json = JSON.parse(readFileSync(filePath, "utf-8"));
+    return json && typeof json === "object" ? (json as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 读取 settings.enabledModels（项目覆盖全局），供飞书精简列表使用 */
+function readEnabledModelPatterns(): string[] {
+  const global = readSettingsObject(join(homedir(), ".pi", "agent", "settings.json"));
+  const project = readSettingsObject(join(process.cwd(), ".pi", "settings.json"));
+  const raw = project.enabledModels ?? global.enabledModels;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function stripThinkingSuffix(pattern: string): string {
+  const lastColon = pattern.lastIndexOf(":");
+  if (lastColon === -1) return pattern;
+  const suffix = pattern.slice(lastColon + 1).toLowerCase();
+  return THINKING_LEVELS.has(suffix) ? pattern.slice(0, lastColon).trim() : pattern;
+}
+
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+function modelMatchesEnabledPattern(model: ListedModel, pattern: string): boolean {
+  const raw = stripThinkingSuffix(pattern.trim());
+  if (!raw) return false;
+  const full = `${model.provider}/${model.id}`;
+  if (raw.includes("*") || raw.includes("?")) {
+    const re = globToRegExp(raw);
+    return re.test(full) || re.test(model.id);
+  }
+  return full.toLowerCase() === raw.toLowerCase() || model.id.toLowerCase() === raw.toLowerCase();
+}
+
+/**
+ * 飞书列表优先显示 enabledModels（与 TUI Ctrl+P 范围一致）。
+ * 未配置时回退为按 provider 汇总，避免 dump 全量目录。
+ */
+function buildModelListLines(
+  available: ListedModel[],
+  current: ListedModel | undefined,
+): { lines: string[]; mode: "scoped" | "providers" | "empty"; total: number } {
+  if (available.length === 0) {
+    return { lines: ["（无可用模型）"], mode: "empty", total: 0 };
+  }
+
+  const patterns = readEnabledModelPatterns();
+  if (patterns.length > 0) {
+    const scoped: ListedModel[] = [];
+    for (const pattern of patterns) {
+      for (const model of available) {
+        if (!modelMatchesEnabledPattern(model, pattern)) continue;
+        if (scoped.some((m) => m.provider === model.provider && m.id === model.id)) continue;
+        scoped.push(model);
+      }
+    }
+    if (scoped.length > 0) {
+      const lines = scoped.map((m) => {
+        const mark =
+          current && m.provider === current.provider && m.id === current.id ? " *" : "";
+        return `  - ${formatModelRef(m)}${mark}`;
+      });
+      return { lines, mode: "scoped", total: scoped.length };
+    }
+  }
+
+  // 无 enabledModels 或均不可用：按 provider 汇总，不列全量模型
+  const byProvider = new Map<string, number>();
+  for (const model of available) {
+    byProvider.set(model.provider, (byProvider.get(model.provider) ?? 0) + 1);
+  }
+  const lines = [...byProvider.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([provider, count]) => `  - ${provider} (${count})`);
+  return { lines, mode: "providers", total: available.length };
+}
+
 /**
  * 解析飞书 `/model` 参数，对齐 TUI 常见写法：
  * - `cpa/grok45`
@@ -703,16 +793,13 @@ export default function (pi: ExtensionAPI) {
           const currentLine = current
             ? `当前: ${formatModelRef(current)} · thinking ${thinking}`
             : "当前: （未选择模型）";
-          const list = available
-            .slice(0, 30)
-            .map((m) => {
-              const mark =
-                current && m.provider === current.provider && m.id === current.id ? " *" : "";
-              return `  - ${formatModelRef(m)}${mark}`;
-            })
-            .join("\n");
-          const more =
-            available.length > 30 ? `\n  …共 ${available.length} 个可用模型` : "";
+          const listed = buildModelListLines(available, current);
+          const header =
+            listed.mode === "scoped"
+              ? `常用模型 (enabledModels, ${listed.total}):`
+              : listed.mode === "providers"
+                ? `已配置 provider (${listed.total} 个模型，未设置 enabledModels):`
+                : "可用模型:";
           await client?.sendMessage(
             chatId,
             [
@@ -721,7 +808,8 @@ export default function (pi: ExtensionAPI) {
               "示例: /model cpa/grok45",
               "      /model cpa/grok45:high",
               "",
-              available.length === 0 ? "（无可用模型）" : `可用模型:\n${list}${more}`,
+              header,
+              ...listed.lines,
             ].join("\n"),
             msgId,
           );

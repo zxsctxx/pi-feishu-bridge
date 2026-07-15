@@ -69,7 +69,7 @@ pi install ./pi-feishu-bridge-2.0.12.tgz
 | `/new` | 真正新建 Pi 会话（清空上下文；经内部命令调用 `ctx.newSession`） |
 | `/reload` | 等同终端 `/reload`（热重载扩展/技能/主题等；`/feishu config reload` 仅重载飞书配置） |
 | `/compact` | 压缩上下文 |
-| `/model` | 查看/切换模型；支持 TUI 写法如 `/model cpa/grok45`、`/model cpa/grok45:high` |
+| `/model` | 查看/切换模型；列表优先显示 `settings.enabledModels`；支持 `/model cpa/grok45`、`/model cpa/grok45:high` |
 | `/stop` / `/queue` / `/status` / `/help` | 中断、排队、状态、帮助 |
 
 ## LLM 工具
