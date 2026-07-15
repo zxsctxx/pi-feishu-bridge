@@ -44,6 +44,11 @@ import {
   sessionDisplayTitle,
   type ResumeSessionInfo,
 } from "./session/resume.js";
+import {
+  aggregateSessionStats,
+  formatNameResult,
+  formatSessionMeta,
+} from "./session/meta.js";
 
 // ─── 常量 ─────────────────────────────────────────────
 
@@ -1006,11 +1011,67 @@ export default function (pi: ExtensionAPI) {
         break;
       }
 
+      case "/name": {
+        const raw = args.trim();
+        if (!raw) {
+          await client?.sendMessage(
+            chatId,
+            formatNameResult(pi.getSessionName(), "show"),
+            msgId,
+          );
+          break;
+        }
+        if (raw.toLowerCase() === "clear" || raw === "-") {
+          pi.setSessionName("");
+          await client?.sendMessage(chatId, formatNameResult(undefined, "cleared"), msgId);
+          break;
+        }
+        pi.setSessionName(raw);
+        await client?.sendMessage(chatId, formatNameResult(raw, "set"), msgId);
+        break;
+      }
+
+      case "/session": {
+        if (!ctxRef) {
+          await client?.sendMessage(chatId, "无法查看：会话上下文不可用。", msgId);
+          break;
+        }
+        const sm = ctxRef.sessionManager;
+        const stats = aggregateSessionStats(sm.getEntries() as Parameters<typeof aggregateSessionStats>[0]);
+        const ctxUsage = ctxRef.getContextUsage();
+        const currentModel = ctxRef.model;
+        const modelLine = currentModel
+          ? `${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`
+          : undefined;
+        await client?.sendMessage(
+          chatId,
+          formatSessionMeta({
+            name: pi.getSessionName() ?? sm.getSessionName(),
+            sessionId: sm.getSessionId(),
+            sessionFile: sm.getSessionFile(),
+            cwd: ctxRef.cwd || sm.getCwd() || undefined,
+            ...stats,
+            context: ctxUsage
+              ? {
+                  tokens: ctxUsage.tokens,
+                  contextWindow: ctxUsage.contextWindow,
+                  percent: ctxUsage.percent,
+                }
+              : undefined,
+            modelLine,
+          }),
+          msgId,
+        );
+        break;
+      }
+
       case "/help": {
         const helpText = [
           "可用命令:",
           "  /new       - 新建 Pi 会话（清空上下文）",
           "  /resume    - 列出/恢复历史会话（/resume · /resume 3 · /resume all）",
+          "  /name      - 查看/设置会话名称（/name · /name 任务A · /name clear）",
+          "  /session   - 查看会话元信息（ID/文件/消息数/token/费用）",
           "  /reload    - 热重载扩展/技能/主题等（等同终端 /reload）",
           "  /stop      - 中断当前处理，清空排队",
           "  /queue     - 查看排队状态",
