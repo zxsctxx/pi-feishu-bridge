@@ -181,7 +181,10 @@ export class StreamingCardManager {
     }
     try {
       await this.ensureStreamingElements(s);
-      const terminalPanel = buildPanelElement(s, this.options, true) as { header?: unknown; elements?: unknown };
+      const terminalPanel = trimPanelToTagLimit(buildPanelElement(s, this.options, true), 190) as {
+        header?: unknown;
+        elements?: unknown;
+      };
       const terminalActions = [
         partialUpdateElementAction(PANEL_ELEMENT_ID, { header: terminalPanel.header, elements: terminalPanel.elements }),
         addElementsAction([buildFooter(s)], LOADING_ELEMENT_ID),
