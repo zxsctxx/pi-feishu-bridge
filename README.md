@@ -140,7 +140,7 @@ pi install ./pi-feishu-bridge-2.0.16.tgz
 
 ## 飞书权限与事件
 
-所需权限、事件订阅及 CardKit 开通项见 [docs/permissions.md](docs/permissions.md)。真实安装和 12 项验收步骤见 [docs/real-environment-smoke-test.md](docs/real-environment-smoke-test.md)。从 1.x 升级见 [docs/migration-2.0.md](docs/migration-2.0.md)。
+所需权限、事件订阅及 CardKit 开通项见 [docs/permissions.md](docs/permissions.md)。真实安装和 12 项验收步骤见 [docs/real-environment-smoke-test.md](docs/real-environment-smoke-test.md)。从早期 Pi-Feishu 渠道方案 / 1.x 升级见 [docs/migration-2.0.md](docs/migration-2.0.md)。
 
 ## 开发验证
 
@@ -153,7 +153,12 @@ npm pack --dry-run
 
 ## 来源致谢
 
-CardKit 流式状态机、统一时间线、降级与元素安全网的设计参考 Hermes Lark Streaming v1.5.0（MIT）。本项目以 TypeScript 和 Pi 公开扩展事件重新实现，未移植 Python Monkey Patch、Gateway wrapper 或内部 session manager。
+本项目起步于将 [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming) 的 CardKit 流式能力，接到 [surenkid/pi-feishu](https://github.com/surenkid/pi-feishu) 一类的 Pi ↔ 飞书渠道方案上。
+
+- **渠道与 Bot 侧**（WebSocket、消息收发、扩展入口等）：早期参考 / 演进自 [surenkid/pi-feishu](https://github.com/surenkid/pi-feishu)（以对方仓库 LICENSE 为准）。
+- **CardKit 流式状态机、统一时间线、降级与元素安全网**：设计参考 Hermes Lark Streaming v1.5.0（MIT）。本项目以 TypeScript 与 Pi 公开扩展事件重新实现，未移植其 Python Monkey Patch、Gateway wrapper 或内部 session manager。
+
+自 2.0 起实现与产品边界已大幅重写；本仓库为独立维护的 `pi-feishu-bridge`，与上述上游无自动同步关系。感谢原作者的工作。
 
 ## License
 
