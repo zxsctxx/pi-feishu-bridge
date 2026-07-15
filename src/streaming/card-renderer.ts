@@ -35,21 +35,6 @@ function escapeMd(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(MD_SPECIAL, "\\$1");
 }
 
-function longestBacktickRun(value: string): number {
-  let max = 0;
-  const matches = value.match(/`+/g);
-  if (!matches) return 0;
-  for (const m of matches) max = Math.max(max, m.length);
-  return max;
-}
-
-/** 故意代码块展示结果；fence 长度随内容加长，避免内容内反引号打断 */
-function formatCodeBlock(content: string, language: string): string {
-  const normalized = content.replace(/\r\n/g, "\n").trim();
-  const fence = "`".repeat(Math.max(3, longestBacktickRun(normalized) + 1));
-  return `${fence}${language}\n${normalized}\n${fence}`;
-}
-
 function statusIcon(status: ToolStep["status"]): string {
   if (status === "running") return "⏳";
   if (status === "error") return "❌";
@@ -116,12 +101,9 @@ function buildToolElements(step: ToolStep): Record<string, unknown>[] {
   const detail = step.detail?.trim();
   if (detail) out.push(plainIndented(truncate(detail, TOOL_DETAIL_LIMIT)));
 
+  // 输出已是人类可读一行；plain_text 避免再被当成 JSON 代码块
   const output = step.output?.trim();
-  if (output) {
-    const lang = step.status === "error" ? "text" : "json";
-    const fenced = formatCodeBlock(truncate(output, TOOL_OUTPUT_LIMIT), lang);
-    out.push(mdIndented(fenced));
-  }
+  if (output) out.push(plainIndented(truncate(output, TOOL_OUTPUT_LIMIT)));
   return out;
 }
 
