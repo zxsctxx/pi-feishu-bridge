@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateSessionStats,
+  formatContextUsageLine,
   formatNameResult,
+  formatPercent,
   formatSessionMeta,
 } from "./meta.js";
 
@@ -63,14 +65,25 @@ describe("formatSessionMeta", () => {
       totalMessages: 5,
       tokens: { input: 10, output: 5, cacheRead: 20, cacheWrite: 0, total: 35 },
       cost: 0.05,
-      context: { tokens: 1000, contextWindow: 128000, percent: 1 },
+      context: { tokens: 1000, contextWindow: 128000, percent: 31.809375 },
       modelLine: "cpa/grok45 · thinking medium",
     });
     expect(text).toContain("名称: 任务 A");
     expect(text).toContain("ID: abc-123");
     expect(text).toContain("费用: $0.050");
     expect(text).toContain("缓存命中");
-    expect(text).toContain("上下文: 1,000/128,000 (1%)");
+    expect(text).toContain("上下文: 1,000/128,000 (31.81%)");
+  });
+});
+
+describe("formatPercent / formatContextUsageLine", () => {
+  it("keeps two decimal places", () => {
+    expect(formatPercent(31.809375)).toBe("31.81");
+    expect(formatPercent(1)).toBe("1.00");
+    expect(formatPercent(null)).toBeNull();
+    expect(formatContextUsageLine(81432, 256000, 31.809375, { withUnit: true })).toBe(
+      "上下文: 81,432/256,000 tokens (31.81%)",
+    );
   });
 });
 

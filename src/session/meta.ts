@@ -114,6 +114,24 @@ function formatCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** 百分比统一保留两位小数（如 31.81） */
+export function formatPercent(value: number | null | undefined, digits = 2): string | null {
+  if (value == null || Number.isNaN(value)) return null;
+  return value.toFixed(digits);
+}
+
+export function formatContextUsageLine(
+  tokens: number,
+  contextWindow: number,
+  percent?: number | null,
+  options?: { withUnit?: boolean },
+): string {
+  const unit = options?.withUnit ? " tokens" : "";
+  const pct = formatPercent(percent);
+  const pctPart = pct != null ? ` (${pct}%)` : "";
+  return `上下文: ${formatCount(tokens)}/${formatCount(contextWindow)}${unit}${pctPart}`;
+}
+
 export function formatSessionMeta(info: SessionMetaInput): string {
   const lines: string[] = ["会话信息"];
   if (info.name) lines.push(`名称: ${info.name}`);
@@ -151,12 +169,13 @@ export function formatSessionMeta(info: SessionMetaInput): string {
   }
 
   if (info.context && info.context.tokens !== null && info.context.contextWindow > 0) {
-    const pct =
-      info.context.percent != null && !Number.isNaN(info.context.percent)
-        ? ` (${info.context.percent}%)`
-        : "";
+    lines.push("");
     lines.push(
-      `上下文: ${formatCount(info.context.tokens)}/${formatCount(info.context.contextWindow)}${pct}`,
+      formatContextUsageLine(
+        info.context.tokens,
+        info.context.contextWindow,
+        info.context.percent,
+      ),
     );
   }
 

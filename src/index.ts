@@ -46,6 +46,7 @@ import {
 } from "./session/resume.js";
 import {
   aggregateSessionStats,
+  formatContextUsageLine,
   formatNameResult,
   formatSessionMeta,
 } from "./session/meta.js";
@@ -992,20 +993,29 @@ export default function (pi: ExtensionAPI) {
       }
 
       case "/status": {
+        // 运行态快照（桥接连接/排队）；会话累计统计见 /session
         const status = client?.getStatus() ?? "未启动";
         const ctxUsage = ctxRef?.getContextUsage();
         const queue = chatQueues.get(chatId);
         const currentModel = ctxRef?.model;
+        const sessionName = pi.getSessionName();
         let reply = `Pi 状态:\n- 飞书连接: ${status}\n- App ID: ${config.appId ? "****" + config.appId.slice(-4) : "未设置"}`;
+        if (sessionName) {
+          reply += `\n- 会话名: ${sessionName}`;
+        }
         if (currentModel) {
           reply += `\n- 模型: ${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`;
         }
         const warning = accessRiskWarning(config); if (warning) reply += `\n- ${warning}`;
         if (ctxUsage && ctxUsage.tokens !== null) {
-          reply += `\n- 上下文: ${ctxUsage.tokens}/${ctxUsage.contextWindow} tokens (${ctxUsage.percent ?? "?"}%)`;
+          reply += `\n- ${formatContextUsageLine(ctxUsage.tokens, ctxUsage.contextWindow, ctxUsage.percent, { withUnit: true })}`;
         }
         if (queue && queue.queue.length > 0) {
           reply += `\n- 排队: ${queue.queue.length} 条`;
+        } else if (ctxRef && !ctxRef.isIdle()) {
+          reply += "\n- 状态: 处理中";
+        } else {
+          reply += "\n- 状态: 空闲";
         }
         await client?.sendMessage(chatId, reply, msgId);
         break;
