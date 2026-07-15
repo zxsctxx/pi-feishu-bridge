@@ -201,8 +201,8 @@ export class StreamingCardManager {
           tag: "collapsible_panel",
           element_id: PANEL_ELEMENT_ID,
           expanded: false,
-          header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪" } },
-          elements: [{ tag: "markdown", content: "早期步骤因卡片元素限制已折叠。" }],
+          header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪", text_size: "notation" } },
+          elements: [{ tag: "markdown", content: "早期步骤因卡片元素限制已折叠。", text_size: "notation" }],
         };
         await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
           partialUpdateElementAction(PANEL_ELEMENT_ID, { header: minimalPanel.header, elements: minimalPanel.elements }),
@@ -278,8 +278,8 @@ export class StreamingCardManager {
         tag: "collapsible_panel",
         element_id: PANEL_ELEMENT_ID,
         expanded: false,
-        header: { title: { tag: "plain_text", content: "Agent loop · 早期步骤已裁剪" } },
-        elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。" }],
+        header: { title: { tag: "plain_text", content: "Agent loop · 早期步骤已裁剪", text_size: "notation" } },
+        elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。", text_size: "notation" }],
       };
       await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
         partialUpdateElementAction(PANEL_ELEMENT_ID, { header: minimal.header, elements: minimal.elements }),
@@ -302,8 +302,8 @@ export class StreamingCardManager {
         tag: "collapsible_panel",
         element_id: PANEL_ELEMENT_ID,
         expanded: false,
-        header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪" } },
-        elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。" }],
+        header: { title: { tag: "plain_text", content: "Agent loop · 详细步骤已裁剪", text_size: "notation" } },
+        elements: [{ tag: "markdown", content: "详细步骤因卡片元素限制已折叠。", text_size: "notation" }],
       };
       await s.updates.enqueue(() => this.cardkit.batchUpdate(s.cardId!, [
         addElementsAction([minimalPanel, answerElement], LOADING_HINT_ELEMENT_ID),

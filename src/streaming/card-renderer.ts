@@ -224,10 +224,12 @@ export function buildPanelElement(
     tag: "collapsible_panel",
     element_id: PANEL_ELEMENT_ID,
     expanded: terminal ? options.panelExpanded : (options.streamingPanelExpanded ?? false),
+    // header 与 footer 同用 notation，避免标题比指标行更抢眼
     header: {
       title: {
         tag: "plain_text",
         content: buildPanelTitle(session, toolCount, terminal),
+        text_size: "notation",
       },
     },
     border: { color: "grey", corner_radius: "5px" },
