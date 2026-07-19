@@ -3,7 +3,7 @@ import { ToolTracker } from "./tool-tracker.js";
 import { UpdateQueue } from "./update-queue.js";
 
 export type CardPhase = "creating" | "streaming" | "completing" | "completed" | "creation_failed" | "failed" | "aborted" | "terminated";
-export type TerminalReason = "normal" | "llm_error" | "user_abort" | "replaced" | "message_unavailable" | "card_creation_failed" | "session_shutdown";
+export type TerminalReason = "normal" | "llm_error" | "user_abort" | "timeout" | "replaced" | "message_unavailable" | "card_creation_failed" | "session_shutdown";
 export interface FooterMetrics {
   model?: string;
   inputTokens?: number;

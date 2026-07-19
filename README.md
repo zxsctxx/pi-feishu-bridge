@@ -78,6 +78,8 @@ pi install ./pi-feishu-bridge-2.0.16.tgz
 | `allowedChatIds` / `allowedOpenIds` | `[]` | 见上方匹配规则 |
 | `requireMentionInGroup` | false | 生产群聊建议 true |
 | `clarifyTimeoutSec` | 300 | `ask_feishu` 默认等待时间 |
+| `taskTimeoutSec` | 900 | 单轮 Agent 硬超时（秒），超时 abort 并终态封卡；可用 `FEISHU_TASK_TIMEOUT_SEC` |
+| `sameChatBusyPolicy` | `queue` | 同 chat 忙时：`queue` 排队；`interrupt` 打断当前并只跑最新消息。环境变量 `FEISHU_SAME_CHAT_BUSY_POLICY` |
 | `footer.showFooter` | true | 是否在终态卡片显示页脚 |
 | `footer.lines` | 见下 | 二维数组：外层=行，内层=同行字段 |
 

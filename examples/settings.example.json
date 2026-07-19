@@ -22,6 +22,8 @@
     "allowedOpenIds": ["ou_xxx"],
     "requireMentionInGroup": true,
     "clarifyTimeoutSec": 300,
+    "taskTimeoutSec": 900,
+    "sameChatBusyPolicy": "queue",
     "monitoringEnabled": true,
     "footer": {
       "showFooter": true,

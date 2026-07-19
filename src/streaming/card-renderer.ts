@@ -423,13 +423,24 @@ export function buildFallbackText(session: CardSession, options: CardRenderOptio
   const title =
     (panel.header as { title?: { content?: string } } | undefined)?.title?.content ?? "Agent loop";
   const timeline = panelContent(panel);
+  const answer = (session.answer || "").trim();
+  const error = (session.errorMessage || "").trim();
+  // 空正文兜底：stop_reason / 错误 / 时间线尾部，避免飞书侧只剩空白终态
+  let answerSection = answer;
+  if (!answerSection) {
+    const stop = session.footer.stopReason ? `stop_reason=${session.footer.stopReason}` : "";
+    const tail = timeline ? truncate(timeline.replace(/\s+/g, " ").trim(), 300) : "";
+    if (error) answerSection = `处理结束，但未生成文本回复。\n\n错误：${error}${stop ? `\n${stop}` : ""}`;
+    else if (stop || tail) answerSection = `处理结束，但未生成文本回复。${stop ? `\n${stop}` : ""}${tail ? `\n…${tail}` : ""}`;
+    else answerSection = "处理结束，但未生成文本回复。";
+  }
   const sections = [
     session.fallbackReason
       ? `> ⚠️ CardKit 原生流式不可用，已切换兼容模式：${truncate(session.fallbackReason, 800)}`
       : "",
     timeline ? `### ${title}\n\n${timeline}` : "",
-    session.answer ? `### 回答\n\n${session.answer}` : "",
-    session.errorMessage ? `### 错误\n\n${session.errorMessage}` : "",
+    `### 回答\n\n${answerSection}`,
+    error && answer ? `### 错误\n\n${error}` : "",
   ];
   return sections.filter(Boolean).join("\n\n");
 }

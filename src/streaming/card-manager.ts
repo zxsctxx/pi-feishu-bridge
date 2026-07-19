@@ -160,6 +160,14 @@ export class StreamingCardManager {
     if (s.finalized) return;
     s.finalized = true;
     s.flush.complete();
+    // 空正文时写入可读兜底，避免终态卡片只剩空白
+    if (!(s.answer || "").trim() && !(s.errorMessage || "").trim()) {
+      const stop = s.footer.stopReason ? `stop_reason=${s.footer.stopReason}` : "";
+      s.answer = stop
+        ? `处理结束，但未生成文本回复。\n${stop}`
+        : "处理结束，但未生成文本回复。";
+      s.answerDirty = true;
+    }
     if (!s.cardId) {
       // im_patch / 无原生卡：尽量 PATCH 终态卡，失败则纯文本必达
       this.metrics?.increment("fallbacks");
@@ -184,6 +192,7 @@ export class StreamingCardManager {
     }
     try {
       await this.ensureStreamingElements(s);
+      if (s.answerDirty) await this.flushAnswer(s);
       const terminalPanel = trimPanelToTagLimit(buildPanelElement(s, this.options, true), 190) as {
         header?: unknown;
         elements?: unknown;
@@ -221,10 +230,15 @@ export class StreamingCardManager {
     }
   }
 
-  /** 最终必达：整份 fallback 文本（含答案/错误），避免飞书侧空白 */
+  /** 最终必达：整份 fallback 文本（含答案/错误），避免飞书侧空白；空正文走 stop_reason/错误兜底 */
   private async deliverFinalText(s: CardSession): Promise<void> {
-    const text = buildFallbackText(s, this.options) || s.answer || (s.errorMessage ? `处理失败：${s.errorMessage}` : "处理结束，但未生成文本回复。");
+    const text = buildFallbackText(s, this.options)
+      || (s.answer || "").trim()
+      || (s.errorMessage ? `处理失败：${s.errorMessage}` : "")
+      || (s.footer.stopReason ? `处理结束，但未生成文本回复。\nstop_reason=${s.footer.stopReason}` : "")
+      || "处理结束，但未生成文本回复。";
     try {
+      // sendMessage 内部已按卡片长度切分
       await this.fallback.sendMessage(s.chatId, text, s.userMsgId);
     } catch (error) {
       console.warn(`[pi-feishu] Final text delivery failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -362,7 +376,7 @@ export class StreamingCardManager {
       }
       return;
     }
-    // 无增量尾部也要保证有一条最终消息（答案可能已部分送达，或仅有错误）
-    if (s.answer || s.errorMessage || s.fallbackReason) await this.deliverFinalText(s);
+    // 无增量尾部也要保证有一条最终消息（含空正文兜底）
+    await this.deliverFinalText(s);
   }
 }

@@ -62,6 +62,14 @@ export interface FeishuConfig {
   /** CardKit 流式 print_frequency_ms，默认 70 */
   printFrequencyMs?: number;
   clarifyTimeoutSec?: number;
+  /** 单轮 Agent 任务硬超时（秒），超时 abort；默认 900 */
+  taskTimeoutSec?: number;
+  /**
+   * 同 chat 忙时策略：
+   * - queue：新消息排队（默认）
+   * - interrupt：打断当前任务，仅保留最新一条再处理
+   */
+  sameChatBusyPolicy?: "queue" | "interrupt";
   monitoringEnabled?: boolean;
   streamingTransport?: "auto" | "cardkit" | "im_patch";
   /** 卡片页脚配置；未配置时使用默认两行布局 */
@@ -112,6 +120,8 @@ export interface FeishuSettingsSection {
   maxToolOutputChars?: number;
   printFrequencyMs?: number;
   clarifyTimeoutSec?: number;
+  taskTimeoutSec?: number;
+  sameChatBusyPolicy?: "queue" | "interrupt";
   monitoringEnabled?: boolean;
   streamingTransport?: "auto" | "cardkit" | "im_patch";
   footer?: FooterConfig;

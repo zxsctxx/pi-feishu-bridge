@@ -538,8 +538,15 @@ export class FeishuClient {
       const msg = data.message;
       const sender = data.sender;
 
-      if (msg.create_time && this.isMessageExpired(msg.create_time)) return;
-      if (!this.tryRecordDedup(`${sender.tenant_key ?? "unknown"}:${msg.message_id}`)) return;
+      if (msg.create_time && this.isMessageExpired(msg.create_time)) {
+        _log(`Drop expired message: ${msg.message_id} create_time=${msg.create_time}`);
+        return;
+      }
+      // 双键去重：tenant:message_id + 纯 message_id（覆盖 tenant 字段不稳定的重投）
+      if (!this.tryRecordDedupKeys([
+        `${sender.tenant_key ?? "unknown"}:${msg.message_id}`,
+        `mid:${msg.message_id}`,
+      ])) return;
 
       const senderType = sender.sender_type;
       if (senderType === "bot" || senderType === "app") return;
@@ -715,6 +722,7 @@ export class FeishuClient {
     return text.length > limit ? text.substring(0, limit) + "\n..." : text;
   }
 
+  /** 主动/fallback 文本切分；默认 30000 适配 interactive 卡片，可下调 */
   static splitTextCards(text: string, limit = 30000): string[] {
     if (!text) return [""];
     const chunks: string[] = []; let remaining = text;
@@ -803,20 +811,23 @@ export class FeishuClient {
 
   // ─── 去重 ───────────────────────────────────────────
 
-  private tryRecordDedup(msgId: string): boolean {
+  /** 任一键命中未过期 TTL 则整条丢弃；否则原子写入全部键 */
+  private tryRecordDedupKeys(keys: string[]): boolean {
     const now = Date.now();
-    const existing = this.dedupMap.get(msgId);
-    if (existing !== undefined) {
-      if (now - existing < DEDUP_TTL_MS) return false;
-      this.dedupMap.delete(msgId);
+    const unique = [...new Set(keys.filter(Boolean))];
+    for (const key of unique) {
+      const existing = this.dedupMap.get(key);
+      if (existing !== undefined && now - existing < DEDUP_TTL_MS) {
+        _log(`Dedup hit, drop redelivered message: ${key}`);
+        return false;
+      }
     }
-
-    if (this.dedupMap.size >= DEDUP_MAX_ENTRIES) {
+    while (this.dedupMap.size + unique.length > DEDUP_MAX_ENTRIES) {
       const firstKey = this.dedupMap.keys().next().value;
-      if (firstKey !== undefined) this.dedupMap.delete(firstKey);
+      if (firstKey === undefined) break;
+      this.dedupMap.delete(firstKey);
     }
-
-    this.dedupMap.set(msgId, now);
+    for (const key of unique) this.dedupMap.set(key, now);
     return true;
   }
 
@@ -825,20 +836,18 @@ export class FeishuClient {
     this.dedupSweepTimer = setInterval(() => {
       const now = Date.now();
       for (const [key, ts] of this.dedupMap) {
-        if (now - ts >= DEDUP_TTL_MS) {
-          this.dedupMap.delete(key);
-        } else {
-          break;
-        }
+        if (now - ts >= DEDUP_TTL_MS) this.dedupMap.delete(key);
       }
     }, DEDUP_SWEEP_INTERVAL);
     if (this.dedupSweepTimer.unref) this.dedupSweepTimer.unref();
   }
 
   private isMessageExpired(createTimeStr: string): boolean {
-    const createTime = parseInt(createTimeStr, 10);
-    if (isNaN(createTime)) return false;
-    return Date.now() - createTime > MESSAGE_EXPIRY_MS;
+    const raw = parseInt(createTimeStr, 10);
+    if (isNaN(raw)) return false;
+    // 飞书 create_time 可能是秒或毫秒时间戳
+    const createTimeMs = raw < 1e12 ? raw * 1000 : raw;
+    return Date.now() - createTimeMs > MESSAGE_EXPIRY_MS;
   }
 }
 

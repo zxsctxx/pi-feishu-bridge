@@ -107,6 +107,8 @@ function readFeishuFromSettingsFile(filePath: string): Record<string, unknown> {
       maxToolOutputChars: fs.maxToolOutputChars ?? fs.max_tool_output_chars,
       printFrequencyMs: fs.printFrequencyMs ?? fs.print_frequency_ms,
       clarifyTimeoutSec: fs.clarifyTimeoutSec ?? fs.clarify_timeout_sec,
+      taskTimeoutSec: fs.taskTimeoutSec ?? fs.task_timeout_sec,
+      sameChatBusyPolicy: fs.sameChatBusyPolicy ?? fs.same_chat_busy_policy,
       monitoringEnabled: fs.monitoringEnabled ?? fs.monitoring_enabled,
       streamingTransport: fs.streamingTransport ?? fs.streaming_transport,
       footer: fs.footer,
@@ -184,6 +186,12 @@ function loadConfig(): FeishuConfig {
     maxToolOutputChars: numberValue(process.env.FEISHU_MAX_TOOL_OUTPUT_CHARS ?? s.maxToolOutputChars, 800),
     printFrequencyMs: numberValue(process.env.FEISHU_PRINT_FREQUENCY_MS ?? s.printFrequencyMs, 70),
     clarifyTimeoutSec: numberValue(process.env.FEISHU_CLARIFY_TIMEOUT_SEC ?? s.clarifyTimeoutSec, 300),
+    // 默认 900s（15 分钟）；下限 30s，上限 24h
+    taskTimeoutSec: Math.min(86400, Math.max(30, numberValue(process.env.FEISHU_TASK_TIMEOUT_SEC ?? s.taskTimeoutSec, 900))),
+    sameChatBusyPolicy: (() => {
+      const raw = String(process.env.FEISHU_SAME_CHAT_BUSY_POLICY ?? s.sameChatBusyPolicy ?? "queue").toLowerCase();
+      return raw === "interrupt" || raw === "abort" || raw === "replace" ? "interrupt" : "queue";
+    })(),
     monitoringEnabled: booleanValue(process.env.FEISHU_MONITORING_ENABLED ?? s.monitoringEnabled, true),
     streamingTransport: (process.env.FEISHU_STREAMING_TRANSPORT || stringValue(s.streamingTransport) || "auto") as "auto" | "cardkit" | "im_patch",
     footer: parseFooter(s.footer),
@@ -502,6 +510,57 @@ export default function (pi: ExtensionAPI) {
 
   /** 每个聊天的消息队列 */
   const chatQueues: Map<string, ChatQueue> = new Map();
+  /** 当前任务硬超时定时器（agent_settled / abort 时清理） */
+  let taskTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearTaskTimeout(): void {
+    if (taskTimeoutTimer) {
+      clearTimeout(taskTimeoutTimer);
+      taskTimeoutTimer = null;
+    }
+  }
+
+  function armTaskTimeout(chatId: string): void {
+    clearTaskTimeout();
+    const sec = config.taskTimeoutSec ?? 900;
+    taskTimeoutTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          console.warn(`[pi-feishu] task timeout after ${sec}s chatId=${chatId}`);
+          flashStatus(`飞书: ⏰ 任务超时 (${sec}s)`);
+          if (streaming?.activeSession?.chatId === chatId) {
+            await streaming.abort(`任务超时（${sec}s）`, "timeout");
+          }
+          if (ctxRef && !ctxRef.isIdle()) ctxRef.abort();
+          await client?.stopTyping(chatId, false).catch(() => {});
+          // abort 后通常会走 agent_settled；若未 settled 也要放开本 chat 队列
+          const queue = chatQueues.get(chatId);
+          if (queue) queue.processing = false;
+          flushAllQueues();
+        } catch (err) {
+          console.warn(`[pi-feishu] task timeout handler failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    }, sec * 1000);
+    if (typeof taskTimeoutTimer === "object" && taskTimeoutTimer && "unref" in taskTimeoutTimer) {
+      (taskTimeoutTimer as NodeJS.Timeout).unref?.();
+    }
+  }
+
+  /** 入站媒体统一本地路径标签（便于模型/tool 直接读盘） */
+  function formatInboundResourceLabel(type: InboundResource["type"], localPath: string, fileName?: string): string {
+    const name = fileName || localPath.split(/[\\/]/).pop() || localPath;
+    switch (type) {
+      case "image":
+        return `[image: ${name}]\n[Image: source: ${localPath}]`;
+      case "audio":
+        return `[audio: ${name}]\n[File: source: ${localPath}]`;
+      case "video":
+        return `[video: ${name}]\n[File: source: ${localPath}]`;
+      default:
+        return `[file: ${name}]\n[File: source: ${localPath}]`;
+    }
+  }
 
   // ─── 注册 CLI 标志 ────────────────────────────────────
 
@@ -636,15 +695,52 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // ── 入队 ──
+    // ── 入队 / 同 chat 打断 ──
     const queue = chatQueues.get(chatId) ?? { processing: false, queue: [] };
     chatQueues.set(chatId, queue);
+    const incoming: QueuedMessage = { msgId, text: content, resources, chatType };
 
-    queue.queue.push({ msgId, text: content, resources, chatType });
+    const sameChatBusy =
+      queue.processing ||
+      streaming?.activeSession?.chatId === chatId;
+    const busyPolicy = config.sameChatBusyPolicy ?? "queue";
+
+    // 同 chat 忙且策略为 interrupt：丢掉本 chat 旧排队，打断当前任务，只保留最新一条
+    if (sameChatBusy && busyPolicy === "interrupt") {
+      const dropped = queue.queue.length;
+      queue.queue = [incoming];
+      clearTaskTimeout();
+      await clarify?.abort();
+      if (streaming?.activeSession?.chatId === chatId) {
+        await streaming.abort("被同会话新消息打断", "user_abort");
+      }
+      const agentBusy = Boolean(ctxRef && !ctxRef.isIdle());
+      if (agentBusy) ctxRef!.abort();
+      client?.stopTyping(chatId, false).catch(() => {});
+      await client?.sendMessage(
+        chatId,
+        dropped > 0
+          ? `已打断上一条任务，并丢弃 ${dropped} 条排队，开始处理最新消息。`
+          : "已打断上一条任务，开始处理最新消息。",
+        msgId,
+      );
+      flashStatus("飞书: ⚡ 打断并切换到新消息");
+      if (agentBusy) {
+        // 等 agent_settled 清 processing 并 flush 最新消息
+        queue.processing = true;
+      } else {
+        // Agent 已空闲（仅卡片态等）→ 直接开跑
+        queue.processing = false;
+        await dequeueAndProcess(chatId);
+      }
+      return;
+    }
+
+    queue.queue.push(incoming);
 
     const anotherRequestIsRunning = [...chatQueues.entries()].some(([id, candidate]) => id !== chatId && candidate.processing);
     if (queue.processing || anotherRequestIsRunning || (ctxRef ? !ctxRef.isIdle() : false)) {
-      // 当前正在处理 → 通知排队
+      // 排队模式（或跨 chat / 全局忙）：通知排队
       const pos = [...chatQueues.values()].reduce((total, candidate) => total + candidate.queue.length, 0);
       await client?.sendMessage(
         chatId,
@@ -683,8 +779,8 @@ export default function (pi: ExtensionAPI) {
 
     flashStatus(`飞书: 📩 ${item.text.substring(0, 20)}${item.text.length > 20 ? "..." : ""}`);
 
-    // 下载入站媒体
-    let resourceDescription = "";
+    // 下载入站媒体，并统一为本地路径标签
+    const resourceParts: string[] = [];
     for (const res of item.resources) {
       const localPath = await client!.downloadResource(
         item.msgId,
@@ -693,11 +789,7 @@ export default function (pi: ExtensionAPI) {
         res.fileName,
       );
       if (localPath) {
-        const typeLabel =
-          res.type === "image" ? "图片" :
-          res.type === "audio" ? "语音" :
-          res.type === "video" ? "视频" : "文件";
-        resourceDescription += `\n[收到${typeLabel}: ${localPath}]`;
+        resourceParts.push(formatInboundResourceLabel(res.type, localPath, res.fileName));
       }
     }
 
@@ -706,9 +798,10 @@ export default function (pi: ExtensionAPI) {
     // 添加 Typing Reaction 并创建单张流式卡片
     await client!.startTyping(chatId, item.msgId);
     await streaming?.start(chatId, item.msgId);
+    armTaskTimeout(chatId);
 
     // 发送给 Pi
-    const fullContent = item.text + (resourceDescription ? "\n" + resourceDescription : "");
+    const fullContent = [item.text, ...resourceParts].filter(Boolean).join("\n");
     pi.sendUserMessage(fullContent);
   }
 
@@ -717,6 +810,7 @@ export default function (pi: ExtensionAPI) {
   /** 为 /new /reload /resume 做前置清理：中断流式、清空本聊天队列、abort Agent */
   async function prepareRemoteSessionControl(chatId: string): Promise<void> {
     latestChatId = chatId;
+    clearTaskTimeout();
     await clarify?.abort();
     if (streaming?.activeSession) await streaming.abort("会话控制命令中断当前任务");
     client?.stopTyping(chatId, false).catch(() => {});
@@ -751,7 +845,7 @@ export default function (pi: ExtensionAPI) {
           const warning = accessRiskWarning(config);
           await client?.sendMessage(chatId, `${PRODUCT_NAME} ${PRODUCT_VERSION} (${PRODUCT_ID})\n飞书连接: ${client?.getStatus() ?? "未启动"}\n访问策略: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}${warning ? `\n${warning}` : ""}`, msgId);
         } else if (action === "config") {
-          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nStreaming transport: ${config.streamingTransport ?? "auto"}\nShow thinking: ${config.showThinking ?? false}\nAccess policy: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
+          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nStreaming transport: ${config.streamingTransport ?? "auto"}\nShow thinking: ${config.showThinking ?? false}\nTask timeout: ${config.taskTimeoutSec ?? 900}s\nSame-chat busy: ${config.sameChatBusyPolicy ?? "queue"}\nAccess policy: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
         } else if (action === "config reload") {
           const result = await configReload.request(ctxRef?.isIdle() ?? true, async () => { config = loadConfig(); await startFeishuClient(); });
           await client?.sendMessage(chatId, result === "deferred" ? "配置将在当前 Agent 完全 settled 后重载。" : "配置已重载。", msgId);
@@ -859,6 +953,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       case "/stop": {
+        clearTaskTimeout();
         await clarify?.abort();
         if (streaming?.activeSession?.chatId === chatId) await streaming.abort("用户已停止当前任务");
         // 中断当前处理 + 清空队列
@@ -1229,6 +1324,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", () => { streaming?.onAgentEnd(); });
 
   pi.on("agent_settled", async () => {
+    clearTaskTimeout();
     const usage = ctxRef?.getContextUsage(); const active = streaming?.activeSession;
     // 落盘后按 session 全量再刷一次，避免 pending 与 getEntries 边界误差
     applySessionFooterUsage();
@@ -1240,7 +1336,7 @@ export default function (pi: ExtensionAPI) {
     if (queue) queue.processing = false;
     streaming?.release();
     flushAllQueues();
-    flashStatus("飞书: ✅ 完成");
+    flashStatus(session.terminalReason === "timeout" ? "飞书: ⏰ 超时" : "飞书: ✅ 完成");
     await configReload.afterSettled(async () => { config = loadConfig(); await startFeishuClient(); });
   });
 
@@ -1676,6 +1772,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    clearTaskTimeout();
     await clarify?.abort();
     await streaming?.terminate("Pi 会话已关闭");
     if (client) {
