@@ -15,7 +15,7 @@
 ## 安装
 
 ```bash
-pi install ./pi-feishu-bridge-2.0.16.tgz
+pi install ./pi-feishu-bridge-2.0.17.tgz
 ```
 
 兼容范围固定为 `@earendil-works/pi-coding-agent >=0.80.6 <0.81.0`，不会自动匹配 Pi 0.81+。
