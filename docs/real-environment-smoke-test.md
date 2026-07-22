@@ -1,12 +1,12 @@
-# Pi v0.80.6 + 飞书测试应用真实冒烟方案
+# Pi（>=0.80.6 <0.82.0）+ 飞书测试应用真实冒烟方案
 
 当前仓库环境没有真实 Pi/飞书租户，因此以下步骤必须由测试者在真实环境执行并保存截图、Pi 日志和飞书消息链接作为最终证据。
 
 ## 准备
 
-1. 安装 Node.js 20+ 和 Pi v0.80.6，确认 `pi --version` 精确为 0.80.6。
+1. 安装 Node.js 20+ 和兼容版 Pi（`>=0.80.6 <0.82.0`，推荐 0.81.1），确认 `pi --version` 在范围内。
 2. 从本仓库执行 `npm ci && npm run typecheck && npm test && npm pack --dry-run`。
-3. 使用生成的 tarball 安装：`pi install ./pi-feishu-bridge-2.0.17.tgz`（版本以 `package.json` 为准），启动 Pi，确认扩展无加载错误。
+3. 使用生成的 tarball 安装：`pi install ./pi-feishu-bridge-2.0.18.tgz`（版本以 `package.json` 为准），启动 Pi，确认扩展无加载错误。
 4. 创建飞书测试应用，按 `docs/permissions.md` 开通权限、事件和 CardKit，发布测试版本。
 5. 使用 allowlist 配置测试用户和 chat；准备第二个未授权账号。先运行 `/feishu doctor`，确认凭据、连接和安全警告符合预期。
 

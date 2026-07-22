@@ -1,14 +1,23 @@
 {
   "name": "pi-feishu-bridge",
-  "version": "2.0.17",
+  "version": "2.0.18",
   "description": "Pi-Feishu Bridge: Feishu WebSocket channel with CardKit and IM PATCH streaming transports",
   "type": "module",
   "main": "src/index.ts",
   "license": "MIT",
   "author": "zxsctxx",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zxsctxx/pi-feishu-bridge.git"
+  },
+  "homepage": "https://github.com/zxsctxx/pi-feishu-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/zxsctxx/pi-feishu-bridge/issues"
+  },
   "keywords": [
     "pi-package",
     "pi",
+    "pi-coding-agent",
     "pi-extension",
     "feishu",
     "lark",
@@ -18,10 +27,12 @@
   ],
   "files": [
     "src",
+    "!src/**/*.test.ts",
     "docs",
     "examples/settings.example.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "RELEASE_NOTES_v2.0.18.md"
   ],
   "pi": {
     "extensions": [
@@ -34,19 +45,23 @@
     "prepublishOnly": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.64.0",
-    "typebox": "^1.1.39"
+    "@larksuiteoapi/node-sdk": "^1.64.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.81.0"
+    "@earendil-works/pi-coding-agent": ">=0.80.6 <0.82.0",
+    "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
       "optional": true
+    },
+    "typebox": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "typebox": "^1.1.39",
     "typescript": "^5.5.0",
     "vitest": "^3.2.4"
   },

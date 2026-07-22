@@ -1,6 +1,6 @@
 # Pi-Feishu Bridge 2.0
 
-通过飞书/Lark 官方 Bot API WebSocket 长连接，将飞书作为 Pi v0.80.6 的受控聊天入口。2.0 使用 CardKit v2 原生元素流式 API，不再用整卡 PATCH 模拟流式输出。
+通过飞书/Lark 官方 Bot API WebSocket 长连接，将飞书作为 Pi（`>=0.80.6 <0.82.0`）的受控聊天入口。2.0 使用 CardKit v2 原生元素流式 API，不再用整卡 PATCH 模拟流式输出。
 
 ## 主要能力
 
@@ -15,10 +15,10 @@
 ## 安装
 
 ```bash
-pi install ./pi-feishu-bridge-2.0.17.tgz
+pi install ./pi-feishu-bridge-2.0.18.tgz
 ```
 
-兼容范围固定为 `@earendil-works/pi-coding-agent >=0.80.6 <0.81.0`，不会自动匹配 Pi 0.81+。
+兼容范围：`@earendil-works/pi-coding-agent >=0.80.6 <0.82.0`（已覆盖 Pi 0.81.x，含当前 0.81.1）。
 
 ## 安全边界
 
