@@ -24,7 +24,6 @@ import {
   type ExtensionContext,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import type { Static } from "typebox";
 import { FeishuClient } from "./feishu-client.js";
 import type { FeishuConfig, InboundMessageContext, InboundResource } from "./types.js";
 import { accessRiskWarning, evaluateAccess, formatAccessDeniedMessage } from "./access/policy.js";
@@ -38,6 +37,7 @@ import { warn, describeError } from "./log.js";
 import { loadConfig, validateConfig, formatConfigProblems } from "./config.js";
 import { MessageQueueManager, type QueuedMessage } from "./queue.js";
 import { accumulateUsage, type MessageUsage, type UsageEntry } from "./session/usage.js";
+import { registerTools } from "./tools.js";
 import {
   dispatchCommand,
   CMD_FEISHU_SESSION_NEW,
@@ -747,207 +747,13 @@ export default function (pi: ExtensionAPI) {
 
   // ─── 注册自定义工具 ──────────────────────────────────
 
-  const AskFeishuParams = {
-    type: "object" as const,
-    properties: {
-      question: { type: "string" as const, description: "需要用户澄清的问题" },
-      choices: { type: "array" as const, items: { type: "string" as const }, minItems: 1, maxItems: 10 },
-      chat_id: { type: "string" as const, description: "目标聊天 ID；留空使用当前聊天" },
-      timeout_seconds: { type: "number" as const, description: "等待秒数，默认使用配置值" },
-    },
-    required: ["question", "choices"],
-  };
-
-  pi.registerTool({
-    name: "ask_feishu",
-    label: "向飞书用户提问",
-    description: "通过飞书交互式选择卡片向授权用户澄清问题，并等待其选择。",
-    parameters: AskFeishuParams,
-    executionMode: "sequential",
-    async execute(_toolCallId, params: Static<typeof AskFeishuParams>, signal) {
-      const chatId = params.chat_id || streaming?.activeSession?.chatId || latestChatId;
-      if (!client || !clarify || !chatId || !params.question || !params.choices?.length) return { content: [{ type: "text" as const, text: "错误: 飞书未连接、没有目标聊天或参数不完整。" }], details: {} as Record<string, unknown> };
-      if (config.allowedChatIds?.length && !config.allowedChatIds.includes(chatId)) return { content: [{ type: "text" as const, text: "错误: 目标聊天不在 allowlist 中。" }], details: { chatId } as Record<string, unknown> };
-      const timeout = Math.min(3600, Math.max(5, Number(params.timeout_seconds ?? config.clarifyTimeoutSec ?? 300))) * 1000;
-      try {
-        const choice = await clarify.ask(chatId, params.question, params.choices, config.allowedOpenIds ?? [], timeout, signal);
-        return { content: [{ type: "text" as const, text: `用户选择：${choice}` }], details: { choice, chatId } as Record<string, unknown> };
-      } catch (error) {
-        return { content: [{ type: "text" as const, text: `澄清失败：${describeError(error)}` }], details: { chatId } as Record<string, unknown> };
-      }
-    },
-  });
-
-  // 发送文本消息
-  const SendToFeishuParams = {
-    type: "object" as const,
-    properties: {
-      message: { type: "string" as const, description: "要发送的消息内容" },
-      chat_id: {
-        type: "string" as const,
-        description: "目标聊天 ID（飞书 chat_id），留空则发送到最近活跃的聊天",
-      },
-    },
-    required: ["message"],
-  };
-
-  pi.registerTool({
-    name: "send_to_feishu",
-    label: "发送到飞书",
-    description: "发送消息到飞书聊天界面。当用户要求通过飞书发送消息时使用。",
-    parameters: SendToFeishuParams,
-    async execute(
-      _toolCallId: string,
-      params: Static<typeof SendToFeishuParams>,
-      _signal: AbortSignal | undefined,
-      _onUpdate: any,
-      _ctx: ExtensionContext,
-    ) {
-      const message = params.message as string;
-      const chatId = (params.chat_id as string) || streaming?.activeSession?.chatId || latestChatId;
-
-      if (!client || client.getStatus() !== "connected") {
-        return {
-          content: [
-            { type: "text" as const, text: "错误: 飞书 Bot 未连接。请先运行 /feishu start 启动连接。" },
-          ],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      if (!chatId) {
-        return {
-          content: [
-            { type: "text" as const, text: "错误: 没有活跃的飞书聊天。请先在飞书中发送一条消息。" },
-          ],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      await client.sendMessage(chatId, downgradeHeadings(message));
-      return {
-        content: [{ type: "text" as const, text: `已发送到飞书 [${chatId}]: ${message}` }],
-        details: { sent: true, chatId, message } as Record<string, unknown>,
-      };
-    },
-  });
-
-  // 发送图片
-  const SendImageToFeishuParams = {
-    type: "object" as const,
-    properties: {
-      file_path: { type: "string" as const, description: "本地图片文件路径" },
-      chat_id: {
-        type: "string" as const,
-        description: "目标聊天 ID，留空则发送到最近活跃的聊天",
-      },
-    },
-    required: ["file_path"],
-  };
-
-  pi.registerTool({
-    name: "send_image_to_feishu",
-    label: "发送图片到飞书",
-    description: "将本地图片文件上传到飞书并发送。当需要发送图片到飞书聊天时使用。",
-    parameters: SendImageToFeishuParams,
-    async execute(
-      _toolCallId: string,
-      params: Static<typeof SendImageToFeishuParams>,
-      _signal: AbortSignal | undefined,
-      _onUpdate: any,
-      _ctx: ExtensionContext,
-    ) {
-      const filePath = params.file_path as string;
-      const chatId = (params.chat_id as string) || streaming?.activeSession?.chatId || latestChatId;
-
-      if (!client || client.getStatus() !== "connected") {
-        return {
-          content: [{ type: "text" as const, text: "错误: 飞书 Bot 未连接。" }],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      if (!chatId) {
-        return {
-          content: [{ type: "text" as const, text: "错误: 没有活跃的飞书聊天。" }],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      const imageKey = await client.uploadImage(filePath);
-      if (!imageKey) {
-        return {
-          content: [{ type: "text" as const, text: "错误: 图片上传失败。" }],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      await client.sendImage(chatId, imageKey);
-      return {
-        content: [{ type: "text" as const, text: `图片已发送到飞书 [${chatId}]: ${filePath}` }],
-        details: { sent: true, chatId, filePath, imageKey } as Record<string, unknown>,
-      };
-    },
-  });
-
-  // 发送文件
-  const SendFileToFeishuParams = {
-    type: "object" as const,
-    properties: {
-      file_path: { type: "string" as const, description: "本地文件路径" },
-      file_name: { type: "string" as const, description: "文件名" },
-      chat_id: {
-        type: "string" as const,
-        description: "目标聊天 ID，留空则发送到最近活跃的聊天",
-      },
-    },
-    required: ["file_path", "file_name"],
-  };
-
-  pi.registerTool({
-    name: "send_file_to_feishu",
-    label: "发送文件到飞书",
-    description: "将本地文件上传到飞书并发送。当需要发送文件到飞书聊天时使用。",
-    parameters: SendFileToFeishuParams,
-    async execute(
-      _toolCallId: string,
-      params: Static<typeof SendFileToFeishuParams>,
-      _signal: AbortSignal | undefined,
-      _onUpdate: any,
-      _ctx: ExtensionContext,
-    ) {
-      const filePath = params.file_path as string;
-      const fileName = params.file_name as string;
-      const chatId = (params.chat_id as string) || streaming?.activeSession?.chatId || latestChatId;
-
-      if (!client || client.getStatus() !== "connected") {
-        return {
-          content: [{ type: "text" as const, text: "错误: 飞书 Bot 未连接。" }],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      if (!chatId) {
-        return {
-          content: [{ type: "text" as const, text: "错误: 没有活跃的飞书聊天。" }],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      const fileKey = await client.uploadFile(filePath, fileName);
-      if (!fileKey) {
-        return {
-          content: [{ type: "text" as const, text: "错误: 文件上传失败。" }],
-          details: {} as Record<string, unknown>,
-        };
-      }
-
-      await client.sendFile(chatId, fileKey);
-      return {
-        content: [{ type: "text" as const, text: `文件已发送到飞书 [${chatId}]: ${fileName}` }],
-        details: { sent: true, chatId, filePath, fileName, fileKey } as Record<string, unknown>,
-      };
-    },
+  registerTools(pi, {
+    get client() { return client; },
+    get config() { return config; },
+    get streaming() { return streaming; },
+    get clarify() { return clarify; },
+    get latestChatId() { return latestChatId; },
+    downgradeHeadings,
   });
 
   // ─── 会话生命周期 ─────────────────────────────────────
