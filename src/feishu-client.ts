@@ -70,6 +70,66 @@ interface FeishuMessageEvent {
 // ─── 导出类型 ──────────────────────────────────────────
 
 /** 入站消息中可能携带的资源描述 */
+// ─── 富文本（post）解析 ─────────────────────────────────
+
+/** post 消息的一个内容片段 */
+interface PostElement {
+  tag?: string;
+  text?: string;
+  href?: string;
+  user_id?: string;
+  user_name?: string;
+  image_key?: string;
+}
+
+/**
+ * 解析飞书富文本（post）为纯文本。
+ *
+ * `content` 是二维数组：外层每项一行，内层是该行的片段。
+ * 行内片段直接相接，行之间补换行 —— 否则有序列表、多行段落
+ * 会被压成一行（历史 bug）。
+ *
+ * 匹配到的图片会追加进 `resources`。
+ */
+export function parsePostContent(parsed: unknown, resources: InboundResource[]): string {
+  const root = parsed as Record<string, any> | null | undefined;
+  const locale = root?.zh_cn ?? root?.en_us ?? root?.ja_jp;
+  const lines: string[] = [];
+
+  if (locale?.title) lines.push(String(locale.title));
+
+  if (Array.isArray(locale?.content)) {
+    for (const row of locale.content) {
+      if (!Array.isArray(row)) continue;
+      const segments: string[] = [];
+      for (const elem of row as PostElement[]) {
+        switch (elem?.tag) {
+          case "text":
+          case "md":
+            if (elem.text) segments.push(elem.text);
+            break;
+          case "a":
+            // 保留 URL，否则模型只看到锚文本无法访问链接
+            if (elem.href) segments.push(elem.text ? `[${elem.text}](${elem.href})` : elem.href);
+            else if (elem.text) segments.push(elem.text);
+            break;
+          case "at":
+            segments.push(`@${elem.user_name ?? elem.user_id ?? ""}`);
+            break;
+          case "img":
+            segments.push("[图片]");
+            if (elem.image_key) resources.push({ type: "image", fileKey: elem.image_key });
+            break;
+        }
+      }
+      lines.push(segments.join(""));
+    }
+  }
+
+  // 保留行内空行（段落间隔），仅去掉首尾
+  return lines.join("\n").replace(/^\n+|\n+$/g, "");
+}
+
 // ─── FeishuClient 类 ───────────────────────────────────
 
 export class FeishuClient {
@@ -572,6 +632,7 @@ export class FeishuClient {
 
   // ─── 内容解析 ─────────────────────────────────────────
 
+
   /**
    * 解析消息内容和资源列表。
    * 媒体类型的消息会返回占位文本 + 资源描述，由 index.ts 决定是否下载。
@@ -597,28 +658,9 @@ export class FeishuClient {
         break;
 
       case "post": {
-        const parts: string[] = [];
-        const locale = parsed?.zh_cn ?? parsed?.en_us ?? parsed?.ja_jp;
-        if (locale?.title) parts.push(locale.title);
-        if (Array.isArray(locale?.content)) {
-          for (const row of locale.content) {
-            if (Array.isArray(row)) {
-              for (const elem of row) {
-                if (elem?.tag === "text" && elem.text) parts.push(elem.text);
-                else if (elem?.tag === "a" && elem.text) parts.push(elem.text);
-                else if (elem?.tag === "md" && elem.text) parts.push(elem.text);
-                else if (elem?.tag === "at") parts.push(elem.user_id ?? "");
-                else if (elem?.tag === "img") {
-                  parts.push(`[图片]`);
-                  if (elem.image_key) {
-                    resources.push({ type: "image", fileKey: elem.image_key });
-                  }
-                }
-              }
-            }
-          }
-        }
-        text = parts.join("");
+        // content 是二维数组：外层每项一行，内层是该行的片段。
+        // 行内直接相接，行间必须补换行，否则有序列表等会被压成一行。
+        text = parsePostContent(parsed, resources);
         break;
       }
 
