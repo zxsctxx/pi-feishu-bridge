@@ -37,6 +37,7 @@ import { ConfigReloadCoordinator } from "./monitoring/reload.js";
 import { warn, describeError } from "./log.js";
 import { loadConfig, validateConfig, formatConfigProblems } from "./config.js";
 import { MessageQueueManager, type QueuedMessage } from "./queue.js";
+import { accumulateUsage, type MessageUsage, type UsageEntry } from "./session/usage.js";
 import {
   dispatchCommand,
   CMD_FEISHU_SESSION_NEW,
@@ -484,52 +485,18 @@ export default function (pi: ExtensionAPI) {
   });
 
   /** 与终端 footer 一致：遍历 session 全部 assistant usage 累加；pending 用于 message_end 尚未落盘的当前条 */
-  function applySessionFooterUsage(pending?: { usage?: {
-    input?: number; output?: number; reasoning?: number;
-    cacheRead?: number; cacheWrite?: number; cost?: { total?: number };
-  } }): void {
+  function applySessionFooterUsage(pending?: { usage?: MessageUsage }): void {
     const card = streaming?.activeSession;
     const sm = ctxRef?.sessionManager;
     if (!card || !sm) return;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let reasoningTokens = 0;
-    let cacheRead = 0;
-    let cacheWrite = 0;
-    let cost = 0;
-    let cacheHitPercent: number | undefined;
-    const apply = (usage: {
-      input?: number; output?: number; reasoning?: number;
-      cacheRead?: number; cacheWrite?: number; cost?: { total?: number };
-    } | undefined) => {
-      if (!usage) return;
-      const input = usage.input ?? 0;
-      const cr = usage.cacheRead ?? 0;
-      const cw = usage.cacheWrite ?? 0;
-      inputTokens += input;
-      outputTokens += usage.output ?? 0;
-      if (typeof usage.reasoning === "number") reasoningTokens += usage.reasoning;
-      cacheRead += cr;
-      cacheWrite += cw;
-      cost += usage.cost?.total ?? 0;
-      const promptTokens = input + cr + cw;
-      if (promptTokens > 0 && (cr > 0 || cw > 0)) {
-        cacheHitPercent = (cr / promptTokens) * 100;
-      }
-    };
-    for (const entry of sm.getEntries()) {
-      if (entry.type !== "message") continue;
-      const message = entry.message as { role?: string; usage?: Parameters<typeof apply>[0] };
-      if (message.role === "assistant") apply(message.usage);
-    }
-    apply(pending?.usage);
-    card.footer.inputTokens = inputTokens;
-    card.footer.outputTokens = outputTokens;
-    card.footer.reasoningTokens = reasoningTokens > 0 ? reasoningTokens : undefined;
-    card.footer.cacheRead = cacheRead;
-    card.footer.cacheWrite = cacheWrite;
-    card.footer.cost = cost;
-    card.footer.cacheHitPercent = cacheHitPercent;
+    const totals = accumulateUsage(sm.getEntries() as UsageEntry[], pending?.usage);
+    card.footer.inputTokens = totals.inputTokens;
+    card.footer.outputTokens = totals.outputTokens;
+    card.footer.reasoningTokens = totals.reasoningTokens;
+    card.footer.cacheRead = totals.cacheRead;
+    card.footer.cacheWrite = totals.cacheWrite;
+    card.footer.cost = totals.cost;
+    card.footer.cacheHitPercent = totals.cacheHitPercent;
   }
 
   pi.on("before_agent_start", () => {
