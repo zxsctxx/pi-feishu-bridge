@@ -5,6 +5,7 @@ import { trimPanelToTagLimit } from "../cardkit/limits.js";
 import { CardSession, type TerminalReason } from "./card-session.js";
 import { ANSWER_ELEMENT_ID, LOADING_ELEMENT_ID, LOADING_HINT_ELEMENT_ID, PANEL_ELEMENT_ID, addElementsAction, buildCreatingCard, buildFallbackCard, buildFallbackText, buildPanelElement, deleteElementsAction, footerElements, partialUpdateElementAction, type CardRenderOptions } from "./card-renderer.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
+import { warn, describeError } from "../log.js";
 
 export interface StreamingManagerOptions extends CardRenderOptions { flushIntervalMs: number; maxAnswerElementChars: number; }
 export interface StaticFallback {
@@ -50,7 +51,7 @@ export class StreamingCardManager {
       return;
     } catch (error) {
       if (!isCardIdInvalidError(error)) throw error;
-      console.warn(`[pi-feishu] Card reference still invalid after retries; recreating card once. old_card_id=${session.cardId}`);
+      warn(`Card reference still invalid after retries; recreating card once. old_card_id=${session.cardId}`);
     }
     // 重建：旧 id 作废，新 create + send（send 内部仍有短延迟重试）
     session.cardId = await this.cardkit.createCard(cardJson);
@@ -250,7 +251,7 @@ export class StreamingCardManager {
       // sendMessage 内部已按卡片长度切分
       await this.fallback.sendMessage(s.chatId, text, s.userMsgId);
     } catch (error) {
-      console.warn(`[pi-feishu] Final text delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+      warn(`Final text delivery failed: ${describeError(error)}`);
     }
   }
   private describe(error: unknown): string { return (error as CardKitError)?.message ?? String(error); }
@@ -350,6 +351,6 @@ export class StreamingCardManager {
       return;
     }
     s.degradeReason ||= `CardKit ${s.nativeErrorCode ?? "unknown"}/${s.nativeErrorKind}: ${message}`;
-    console.warn(`[pi-feishu] CardKit degraded to static card: code=${s.nativeErrorCode ?? "unknown"} kind=${s.nativeErrorKind} message=${message}`);
+    warn(`CardKit degraded to static card: code=${s.nativeErrorCode ?? "unknown"} kind=${s.nativeErrorKind} message=${message}`);
   }
 }

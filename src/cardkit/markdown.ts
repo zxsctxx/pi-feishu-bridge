@@ -24,3 +24,20 @@ export function splitMarkdown(input: string, limit: number): MarkdownSplit {
   }
   return { head, tail, consumed: boundary };
 }
+
+/**
+ * 按卡片长度上限反复切分，用于静态消息发送。
+ * 默认 30000 适配 interactive 卡片；空串返回单个空块，保证至少发一条。
+ */
+export function splitTextCards(text: string, limit = 30000): string[] {
+  if (!text) return [""];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    const split = splitMarkdown(remaining, limit);
+    chunks.push(split.head);
+    remaining = split.tail;
+  }
+  chunks.push(remaining);
+  return chunks;
+}

@@ -17,7 +17,7 @@ export function trimPanelToTagLimit<T extends Record<string, unknown>>(panel: T,
   const elements = (clone as any).elements as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(elements)) return clone;
 
-  // 预留 1 个 tag 给折叠提示（与 hermes 先 reserve hint 再 trim 同思路）
+  // 预留 1 个 tag 给折叠提示，避免裁剪后再插入提示又超限
   const hasHint = panelChildText(elements[0]).includes("已折叠");
   const threshold = hasHint ? maxTags : Math.max(1, maxTags - 1);
 

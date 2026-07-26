@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { CardKitError, classifyCardKitError, isCardIdInvalidError } from "./errors.js";
 import { UnavailableMessageGuard } from "./unavailable-guard.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
+import { warn } from "../log.js";
 
 /** create 成功后引用发送的竞态窗口：同 card_id 短延迟重试 */
 const SEND_REFERENCE_MAX_ATTEMPTS = 3;
@@ -45,7 +46,7 @@ export class FeishuCardKitClient implements CardKitOperations {
         if (!isCardIdInvalidError(classified) || attempt >= SEND_REFERENCE_MAX_ATTEMPTS - 1) throw classified;
         const delay = SEND_REFERENCE_RETRY_DELAYS_MS[attempt] ?? 1500;
         this.metrics?.increment("retries");
-        console.warn(`[pi-feishu] Card reference not ready (card_id invalid), retry in ${delay}ms attempt=${attempt + 1}/${SEND_REFERENCE_MAX_ATTEMPTS} card_id=${cardId}`);
+        warn(`Card reference not ready (card_id invalid), retry in ${delay}ms attempt=${attempt + 1}/${SEND_REFERENCE_MAX_ATTEMPTS} card_id=${cardId}`);
         await this.wait(delay);
       }
     }

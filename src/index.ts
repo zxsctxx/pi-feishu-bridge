@@ -50,6 +50,7 @@ import {
   formatSessionMeta,
   formatStatusSessionLines,
 } from "./session/meta.js";
+import { warn, describeError } from "./log.js";
 
 // ─── 常量 ─────────────────────────────────────────────
 
@@ -76,42 +77,13 @@ function toolDisplayName(name: string): string {
 
 // ─── 从 Pi settings.json 读取 feishu 配置段 ──────────────
 
+/** 读取 settings.json 的 feishu 段；仅接受 camelCase（3.0 起不再兼容 snake_case） */
 function readFeishuFromSettingsFile(filePath: string): Record<string, unknown> {
   try {
     if (!existsSync(filePath)) return {};
-    const raw = readFileSync(filePath, "utf-8");
-    const json = JSON.parse(raw);
-    const fs = json?.feishu;
-    if (!fs || typeof fs !== "object") return {};
-    return {
-      appId: fs.appId ?? fs.app_id ?? "",
-      appSecret: fs.appSecret ?? fs.app_secret ?? "",
-      domain: fs.domain ?? "",
-      encryptKey: fs.encryptKey ?? fs.encrypt_key ?? "",
-      verificationToken: fs.verificationToken ?? fs.verification_token ?? "",
-      flushIntervalMs: fs.flushIntervalMs ?? fs.flush_interval_ms,
-      showThinking: fs.showThinking ?? fs.show_thinking ?? fs.showReasoning ?? fs.show_reasoning,
-      printStrategy: fs.printStrategy ?? fs.print_strategy,
-      printStep: fs.printStep ?? fs.print_step,
-      panelExpanded: fs.panelExpanded ?? fs.panel_expanded,
-      maxToolSteps: fs.maxToolSteps ?? fs.max_tool_steps,
-      maxThinkingRounds: fs.maxThinkingRounds ?? fs.max_thinking_rounds,
-      accessPolicy: fs.accessPolicy ?? fs.access_policy,
-      allowedChatIds: fs.allowedChatIds ?? fs.allowed_chat_ids,
-      allowedOpenIds: fs.allowedOpenIds ?? fs.allowed_open_ids,
-      requireMentionInGroup: fs.requireMentionInGroup ?? fs.require_mention_in_group,
-      streamingPanelExpanded: fs.streamingPanelExpanded ?? fs.streaming_panel_expanded,
-      maxAnswerElementChars: fs.maxAnswerElementChars ?? fs.max_answer_element_chars,
-      maxReasoningChars: fs.maxReasoningChars ?? fs.max_reasoning_chars,
-      maxToolDetailChars: fs.maxToolDetailChars ?? fs.max_tool_detail_chars,
-      maxToolOutputChars: fs.maxToolOutputChars ?? fs.max_tool_output_chars,
-      printFrequencyMs: fs.printFrequencyMs ?? fs.print_frequency_ms,
-      clarifyTimeoutSec: fs.clarifyTimeoutSec ?? fs.clarify_timeout_sec,
-      taskTimeoutSec: fs.taskTimeoutSec ?? fs.task_timeout_sec,
-      sameChatBusyPolicy: fs.sameChatBusyPolicy ?? fs.same_chat_busy_policy,
-      monitoringEnabled: fs.monitoringEnabled ?? fs.monitoring_enabled,
-      footer: fs.footer,
-    };
+    const json = JSON.parse(readFileSync(filePath, "utf-8"));
+    const section = json?.feishu;
+    return section && typeof section === "object" ? section : {};
   } catch {
     return {};
   }
@@ -144,7 +116,7 @@ function loadConfig(): FeishuConfig {
   const parseFooter = (value: unknown): FooterConfig | undefined => {
     if (!value || typeof value !== "object") return undefined;
     const obj = value as Record<string, unknown>;
-    const showRaw = obj.showFooter ?? obj.show_footer;
+    const showRaw = obj.showFooter;
     const linesRaw = obj.lines;
     const footer: FooterConfig = {};
     if (typeof showRaw === "boolean") footer.showFooter = showRaw;
@@ -168,7 +140,7 @@ function loadConfig(): FeishuConfig {
     encryptKey: process.env.FEISHU_ENCRYPT_KEY || stringValue(s.encryptKey) || undefined,
     verificationToken: process.env.FEISHU_VERIFICATION_TOKEN || stringValue(s.verificationToken) || undefined,
     flushIntervalMs: numberValue(process.env.FEISHU_FLUSH_INTERVAL_MS ?? s.flushIntervalMs, 200),
-    showThinking: booleanValue(process.env.FEISHU_SHOW_THINKING ?? process.env.FEISHU_SHOW_REASONING ?? s.showThinking, false),
+    showThinking: booleanValue(process.env.FEISHU_SHOW_THINKING ?? s.showThinking, false),
     printStrategy: (process.env.FEISHU_PRINT_STRATEGY || stringValue(s.printStrategy) || "delay") as "fast" | "delay",
     printStep: numberValue(process.env.FEISHU_PRINT_STEP ?? s.printStep, 4),
     panelExpanded: booleanValue(process.env.FEISHU_PANEL_EXPANDED ?? s.panelExpanded, false),
@@ -191,7 +163,6 @@ function loadConfig(): FeishuConfig {
       const raw = String(process.env.FEISHU_SAME_CHAT_BUSY_POLICY ?? s.sameChatBusyPolicy ?? "queue").toLowerCase();
       return raw === "interrupt" || raw === "abort" || raw === "replace" ? "interrupt" : "queue";
     })(),
-    monitoringEnabled: booleanValue(process.env.FEISHU_MONITORING_ENABLED ?? s.monitoringEnabled, true),
     footer: parseFooter(s.footer),
   };
 }
@@ -524,7 +495,7 @@ export default function (pi: ExtensionAPI) {
     taskTimeoutTimer = setTimeout(() => {
       void (async () => {
         try {
-          console.warn(`[pi-feishu] task timeout after ${sec}s chatId=${chatId}`);
+          warn(`task timeout after ${sec}s chatId=${chatId}`);
           flashStatus(`飞书: ⏰ 任务超时 (${sec}s)`);
           if (streaming?.activeSession?.chatId === chatId) {
             await streaming.abort(`任务超时（${sec}s）`, "timeout");
@@ -536,7 +507,7 @@ export default function (pi: ExtensionAPI) {
           if (queue) queue.processing = false;
           flushAllQueues();
         } catch (err) {
-          console.warn(`[pi-feishu] task timeout handler failed: ${err instanceof Error ? err.message : String(err)}`);
+          warn(`task timeout handler failed: ${describeError(err)}`);
         }
       })();
     }, sec * 1000);
@@ -648,7 +619,7 @@ export default function (pi: ExtensionAPI) {
       await client.connect();
       const warning = accessRiskWarning(config);
       if (warning) {
-        console.warn(`[pi-feishu] ${warning}`);
+        warn(`${warning}`);
         if (ctxRef?.hasUI) ctxRef.ui.notify(warning, "warning");
       }
     } catch (err) {
@@ -663,7 +634,7 @@ export default function (pi: ExtensionAPI) {
   async function handleFeishuMessage(context: InboundMessageContext): Promise<void> {
     const decision = evaluateAccess(context, config);
     if (!decision.allowed) {
-      console.warn(
+      warn(
         `[pi-feishu] access denied reason=${decision.reason ?? "unknown"} chatId=${context.chatId} openId=${context.senderOpenId}`,
       );
       await client?.sendMessage(
@@ -998,7 +969,7 @@ export default function (pi: ExtensionAPI) {
           onError: (error) => {
             void client?.sendMessage(
               replyChatId,
-              `上下文压缩失败：${error instanceof Error ? error.message : String(error)}`,
+              `上下文压缩失败：${describeError(error)}`,
               replyMsgId,
             );
           },
@@ -1550,7 +1521,7 @@ export default function (pi: ExtensionAPI) {
         const choice = await clarify.ask(chatId, params.question, params.choices, config.allowedOpenIds ?? [], timeout, signal);
         return { content: [{ type: "text" as const, text: `用户选择：${choice}` }], details: { choice, chatId } as Record<string, unknown> };
       } catch (error) {
-        return { content: [{ type: "text" as const, text: `澄清失败：${error instanceof Error ? error.message : String(error)}` }], details: { chatId } as Record<string, unknown> };
+        return { content: [{ type: "text" as const, text: `澄清失败：${describeError(error)}` }], details: { chatId } as Record<string, unknown> };
       }
     },
   });
@@ -1750,7 +1721,7 @@ export default function (pi: ExtensionAPI) {
         try {
           await client.sendMessage(pending.chatId, pending.text);
         } catch (err) {
-          console.warn(`[pi-feishu] pending notify failed: ${err instanceof Error ? err.message : String(err)}`);
+          warn(`pending notify failed: ${describeError(err)}`);
         }
       }
     }

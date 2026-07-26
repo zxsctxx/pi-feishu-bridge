@@ -31,8 +31,7 @@
     "docs",
     "examples/settings.example.json",
     "README.md",
-    "LICENSE",
-    "RELEASE_NOTES_v2.0.18.md"
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
