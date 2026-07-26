@@ -110,7 +110,6 @@ function readFeishuFromSettingsFile(filePath: string): Record<string, unknown> {
       taskTimeoutSec: fs.taskTimeoutSec ?? fs.task_timeout_sec,
       sameChatBusyPolicy: fs.sameChatBusyPolicy ?? fs.same_chat_busy_policy,
       monitoringEnabled: fs.monitoringEnabled ?? fs.monitoring_enabled,
-      streamingTransport: fs.streamingTransport ?? fs.streaming_transport,
       footer: fs.footer,
     };
   } catch {
@@ -193,7 +192,6 @@ function loadConfig(): FeishuConfig {
       return raw === "interrupt" || raw === "abort" || raw === "replace" ? "interrupt" : "queue";
     })(),
     monitoringEnabled: booleanValue(process.env.FEISHU_MONITORING_ENABLED ?? s.monitoringEnabled, true),
-    streamingTransport: (process.env.FEISHU_STREAMING_TRANSPORT || stringValue(s.streamingTransport) || "auto") as "auto" | "cardkit" | "im_patch",
     footer: parseFooter(s.footer),
   };
 }
@@ -648,15 +646,6 @@ export default function (pi: ExtensionAPI) {
 
     try {
       await client.connect();
-      if (config.streamingTransport === "im_patch") {
-        streaming?.useLegacyMode("配置已强制使用 IM PATCH 兼容流式");
-      } else if (config.streamingTransport !== "cardkit") {
-        const nativeAvailable = await client.checkCardKitAvailability();
-        if (!nativeAvailable) {
-          streaming?.useLegacyMode("CardKit 原生流式探针未通过，自动使用 IM PATCH 兼容流式");
-          console.warn("[pi-feishu] CardKit native streaming probe failed; using IM PATCH transport");
-        }
-      }
       const warning = accessRiskWarning(config);
       if (warning) {
         console.warn(`[pi-feishu] ${warning}`);
@@ -845,7 +834,7 @@ export default function (pi: ExtensionAPI) {
           const warning = accessRiskWarning(config);
           await client?.sendMessage(chatId, `${PRODUCT_NAME} ${PRODUCT_VERSION} (${PRODUCT_ID})\n飞书连接: ${client?.getStatus() ?? "未启动"}\n访问策略: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}${warning ? `\n${warning}` : ""}`, msgId);
         } else if (action === "config") {
-          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nStreaming transport: ${config.streamingTransport ?? "auto"}\nShow thinking: ${config.showThinking ?? false}\nTask timeout: ${config.taskTimeoutSec ?? 900}s\nSame-chat busy: ${config.sameChatBusyPolicy ?? "queue"}\nAccess policy: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
+          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nShow thinking: ${config.showThinking ?? false}\nTask timeout: ${config.taskTimeoutSec ?? 900}s\nSame-chat busy: ${config.sameChatBusyPolicy ?? "queue"}\nAccess policy: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
         } else if (action === "config reload") {
           const result = await configReload.request(ctxRef?.isIdle() ?? true, async () => { config = loadConfig(); await startFeishuClient(); });
           await client?.sendMessage(chatId, result === "deferred" ? "配置将在当前 Agent 完全 settled 后重载。" : "配置已重载。", msgId);
@@ -1501,7 +1490,6 @@ export default function (pi: ExtensionAPI) {
               `App ID: ${config.appId ? "****" + config.appId.slice(-4) : "未设置"}\n` +
               `App Secret: ${config.appSecret ? "****" : "未设置"}\n` +
               `Domain: ${config.domain || "feishu"}\n` +
-              `Streaming Transport: ${config.streamingTransport ?? "auto"}\n` +
               `Show Thinking: ${config.showThinking ?? false}\n` +
               `Encrypt Key: ${config.encryptKey ? "已设置" : "未设置"}\n` +
               `Verification Token: ${config.verificationToken ? "已设置" : "未设置"}`,

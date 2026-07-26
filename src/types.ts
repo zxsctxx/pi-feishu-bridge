@@ -71,7 +71,6 @@ export interface FeishuConfig {
    */
   sameChatBusyPolicy?: "queue" | "interrupt";
   monitoringEnabled?: boolean;
-  streamingTransport?: "auto" | "cardkit" | "im_patch";
   /** 卡片页脚配置；未配置时使用默认两行布局 */
   footer?: FooterConfig;
 }
@@ -123,6 +122,5 @@ export interface FeishuSettingsSection {
   taskTimeoutSec?: number;
   sameChatBusyPolicy?: "queue" | "interrupt";
   monitoringEnabled?: boolean;
-  streamingTransport?: "auto" | "cardkit" | "im_patch";
   footer?: FooterConfig;
 }

@@ -320,6 +320,31 @@ describe("建卡失败降级", () => {
     expect(fallback.messages).toHaveLength(1);
     expect(fallback.messages[0].text).toContain("纯文本兜底内容");
   });
+
+  it("占位卡在流式期间不被更新，仅终态 PATCH 一次", async () => {
+    const cardkit = new FakeCardKit({ createCard: () => new Error("cardkit unavailable") });
+    const fallback = new FakeFallback();
+    const mgr = manager(cardkit, fallback);
+
+    const session = await mgr.start("oc_chat", "om_user");
+    expect(fallback.sentCards).toHaveLength(1);
+    expect(session.staticCardMessageId).toBe("fallback_msg_1");
+
+    // 流式期间的多次事件都不应触发卡片更新
+    mgr.onTextDelta("第一段");
+    mgr.onThinkingDelta("推理中");
+    mgr.onToolStart("t1", "bash", { cmd: "ls" });
+    mgr.onToolEnd("t1", "done", false);
+    mgr.onTextDelta("第二段");
+    expect(fallback.patchedCards).toHaveLength(0);
+
+    await mgr.settle();
+
+    expect(fallback.patchedCards).toHaveLength(1);
+    expect(fallback.patchedCards[0].messageId).toBe("fallback_msg_1");
+    expect(deliveredText(cardkit, fallback)).toContain("第一段");
+    expect(deliveredText(cardkit, fallback)).toContain("第二段");
+  });
 });
 
 // ─── 流式中断 ──────────────────────────────────────────
@@ -339,8 +364,52 @@ describe("流式中途失败", () => {
     mgr.onTextDelta("中断前的内容");
     await mgr.settle();
 
-    expect(session.nativeUpdatesStopped).toBe(true);
+    expect(session.degraded).toBe(true);
     expect(deliveredText(cardkit, fallback)).toContain("中断前的内容");
+  });
+
+  it("降级后不再调用任何 CardKit 原生接口", async () => {
+    const cardkit = new FakeCardKit({
+      updateElement: () => new CardKitError(300309, "streaming_closed", "streaming closed"),
+      batchUpdate: (attempt) => (attempt === 1 ? undefined : new CardKitError(300309, "streaming_closed", "streaming closed")),
+    });
+    const fallback = new FakeFallback();
+    const mgr = manager(cardkit, fallback);
+
+    const session = await mgr.start("oc_chat", "om_user");
+    mgr.onTextDelta("触发降级");
+    // 首次 flush 触发降级
+    await mgr["flushSession"](session);
+    expect(session.degraded).toBe(true);
+
+    const callsAfterDegrade = cardkit.calls.length;
+    mgr.onTextDelta("降级之后的增量");
+    mgr.onToolStart("t1", "bash", { cmd: "ls" });
+    mgr.onToolEnd("t1", "ok", false);
+    await mgr.settle();
+
+    // 降级后只允许静态卡 / 纯文本，不应再有原生调用
+    expect(cardkit.calls.length).toBe(callsAfterDegrade);
+    expect(deliveredText(cardkit, fallback)).toContain("降级之后的增量");
+  });
+
+  it("流式中断时把原生卡 PATCH 成终态，不留转圈半成品", async () => {
+    const cardkit = new FakeCardKit({
+      updateElement: () => new CardKitError(300309, "streaming_closed", "streaming closed"),
+      batchUpdate: (attempt) => (attempt === 1 ? undefined : new CardKitError(300309, "streaming_closed", "streaming closed")),
+    });
+    const fallback = new FakeFallback();
+    const mgr = manager(cardkit, fallback);
+
+    const session = await mgr.start("oc_chat", "om_user");
+    mgr.onTextDelta("需要保住的内容");
+    await mgr.settle();
+
+    // 应对已存在的原生卡消息 PATCH 一次终态静态卡
+    expect(fallback.patchedCards).toHaveLength(1);
+    expect(fallback.patchedCards[0].messageId).toBe(session.cardMessageId);
+    // 已用卡片交付，不应再多发一条纯文本
+    expect(fallback.messages).toHaveLength(0);
   });
 });
 
