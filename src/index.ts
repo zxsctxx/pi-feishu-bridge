@@ -20,7 +20,6 @@
 
 import {
   AgentSession,
-  SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionCommandContext,
@@ -28,35 +27,23 @@ import {
 import type { Static } from "typebox";
 import { FeishuClient } from "./feishu-client.js";
 import type { FeishuConfig, InboundMessageContext, InboundResource } from "./types.js";
-import { accessRiskWarning, evaluateAccess, formatAccessDeniedMessage, DEFAULT_ACCESS_POLICY } from "./access/policy.js";
+import { accessRiskWarning, evaluateAccess, formatAccessDeniedMessage } from "./access/policy.js";
 import { StreamingCardManager } from "./streaming/card-manager.js";
 import { MetricsCollector, formatMetrics } from "./monitoring/metrics.js";
 import { formatDoctor, runDoctor } from "./monitoring/doctor.js";
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from "./version.js";
 import { ClarifyManager } from "./clarify/manager.js";
 import { ConfigReloadCoordinator } from "./monitoring/reload.js";
-import {
-  formatResumeList,
-  resolveSessionFromArg,
-  sessionDisplayTitle,
-  type ResumeSessionInfo,
-} from "./session/resume.js";
-import {
-  aggregateSessionStats,
-  formatNameResult,
-  formatSessionMeta,
-  formatStatusSessionLines,
-} from "./session/meta.js";
 import { warn, describeError } from "./log.js";
 import { loadConfig, validateConfig, formatConfigProblems } from "./config.js";
 import { MessageQueueManager, type QueuedMessage } from "./queue.js";
 import {
-  buildModelListLines,
-  formatModelRef,
-  parseModelArg,
-  resolveModelFromArg,
-  type ListedModel,
-} from "./model-registry.js";
+  dispatchCommand,
+  CMD_FEISHU_SESSION_NEW,
+  CMD_FEISHU_RUNTIME_RELOAD,
+  CMD_FEISHU_SESSION_RESUME,
+  INTERNAL_SESSION_COMMANDS,
+} from "./commands/index.js";
 
 // ─── 常量 ─────────────────────────────────────────────
 
@@ -98,16 +85,6 @@ function takePendingFeishuNotify(): PendingFeishuNotify | null {
   g[PENDING_NOTIFY_KEY] = null;
   return notify;
 }
-
-/** 内部命令名：仅供飞书斜杠经 sendUserMessage 触发，勿与内置 /new /reload /resume 抢名 */
-const CMD_FEISHU_SESSION_NEW = "feishu-session-new";
-const CMD_FEISHU_RUNTIME_RELOAD = "feishu-runtime-reload";
-const CMD_FEISHU_SESSION_RESUME = "feishu-session-resume";
-const INTERNAL_SESSION_COMMANDS = new Set([
-  CMD_FEISHU_SESSION_NEW,
-  CMD_FEISHU_RUNTIME_RELOAD,
-  CMD_FEISHU_SESSION_RESUME,
-]);
 
 /** switchSession 路径经 globalThis 传递，避免 Windows 路径空格被斜杠参数拆开 */
 const PENDING_RESUME_PATH_KEY = "__piFeishuBridgePendingResumePath";
@@ -465,391 +442,29 @@ export default function (pi: ExtensionAPI) {
     msgId: string,
     text: string,
   ): Promise<void> {
-    const parts = text.split(/\s+/);
-    const cmd = parts[0].toLowerCase();
-    const args = parts.slice(1).join(" ");
-
-    switch (cmd) {
-      case "/feishu": {
-        const action = args.toLowerCase() || "help";
-        if (action === "monitor") await client?.sendMessage(chatId, formatMetrics(metrics.snapshot()), msgId);
-        else if (action === "monitor reset") { metrics.reset(); await client?.sendMessage(chatId, "Pi-Feishu 监控指标已清零。", msgId); }
-        else if (action === "doctor") { const connected = client?.getStatus() === "connected"; const cardkit = connected ? await client!.checkCardKitAvailability() : null; await client?.sendMessage(chatId, formatDoctor(runDoctor(config, connected, cardkit)), msgId); }
-        else if (action === "status") {
-          const warning = accessRiskWarning(config);
-          await client?.sendMessage(chatId, `${PRODUCT_NAME} ${PRODUCT_VERSION} (${PRODUCT_ID})\n飞书连接: ${client?.getStatus() ?? "未启动"}\n访问策略: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}${warning ? `\n${warning}` : ""}`, msgId);
-        } else if (action === "config") {
-          await client?.sendMessage(chatId, `Domain: ${config.domain ?? "feishu"}\nShow thinking: ${config.showThinking ?? false}\nTask timeout: ${config.taskTimeoutSec ?? 900}s\nSame-chat busy: ${config.sameChatBusyPolicy ?? "queue"}\nAccess policy: ${config.accessPolicy ?? DEFAULT_ACCESS_POLICY}\nAllowed chats: ${config.allowedChatIds?.length ?? 0}\nAllowed users: ${config.allowedOpenIds?.length ?? 0}`, msgId);
-        } else if (action === "config reload") {
-          const result = await configReload.request(ctxRef?.isIdle() ?? true, async () => { config = loadConfig(); await startFeishuClient(); });
-          await client?.sendMessage(chatId, result === "deferred" ? "配置将在当前 Agent 完全 settled 后重载。" : "配置已重载。", msgId);
-        } else {
-          await client?.sendMessage(chatId, "/feishu status | monitor [reset] | config [reload] | doctor | help", msgId);
-        }
-        break;
-      }
-      case "/new": {
-        await prepareRemoteSessionControl(chatId);
-        setPendingFeishuNotify({
-          chatId,
-          text: "已新建会话。先前上下文已清空，可继续对话。",
-          at: Date.now(),
-        });
-        await client?.sendMessage(chatId, "正在新建会话…", msgId);
-        // newSession 仅在命令上下文可用；经 followUp 触发内部命令
-        pi.sendUserMessage(`/${CMD_FEISHU_SESSION_NEW}`, { deliverAs: "followUp" });
-        break;
-      }
-
-      case "/resume": {
-        const arg = args.trim();
-        const listAll = arg.toLowerCase() === "all";
-        const cwd = ctxRef?.cwd;
-        const currentId = ctxRef?.sessionManager?.getSessionId?.() ?? null;
-
-        const loadSessions = async (all: boolean): Promise<ResumeSessionInfo[]> => {
-          if (all || !cwd) return SessionManager.listAll();
-          return SessionManager.list(cwd);
-        };
-
-        let sessions: ResumeSessionInfo[];
-        try {
-          sessions = await loadSessions(listAll);
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          await client?.sendMessage(chatId, `列出会话失败：${detail}`, msgId);
-          break;
-        }
-
-        const scopeNote = listAll
-          ? "范围: 全部工作目录"
-          : cwd
-            ? "范围: 当前工作目录"
-            : undefined;
-
-        // 无参数或 all → 仅列表
-        if (!arg || listAll) {
-          await client?.sendMessage(
-            chatId,
-            formatResumeList(sessions, { currentId, scopeNote }),
-            msgId,
-          );
-          break;
-        }
-
-        let resolved = resolveSessionFromArg(sessions, arg);
-        // 非编号在本 cwd 未命中时回退全库（编号始终对应当前列表）
-        if (!resolved.ok && !/^\d+$/.test(arg) && cwd) {
-          try {
-            sessions = await loadSessions(true);
-            resolved = resolveSessionFromArg(sessions, arg);
-          } catch {
-            // 保留首次错误
-          }
-        }
-        if (!resolved.ok) {
-          await client?.sendMessage(chatId, resolved.error, msgId);
-          break;
-        }
-
-        if (currentId && resolved.session.id === currentId) {
-          await client?.sendMessage(
-            chatId,
-            `已在该会话中：${sessionDisplayTitle(resolved.session)}`,
-            msgId,
-          );
-          break;
-        }
-
-        const title = sessionDisplayTitle(resolved.session);
-        await prepareRemoteSessionControl(chatId);
-        setPendingResumePath(resolved.session.path);
-        setPendingFeishuNotify({
-          chatId,
-          text: `已恢复会话：${title}\n（${resolved.session.messageCount} 条消息）`,
-          at: Date.now(),
-        });
-        await client?.sendMessage(chatId, `正在恢复会话：${title}…`, msgId);
-        pi.sendUserMessage(`/${CMD_FEISHU_SESSION_RESUME}`, { deliverAs: "followUp" });
-        break;
-      }
-
-      case "/reload": {
-        await prepareRemoteSessionControl(chatId);
-        setPendingFeishuNotify({
-          chatId,
-          text: "已热重载扩展、技能、提示词、主题与上下文文件；飞书连接已恢复。\n（仅重载飞书配置请用 /feishu config reload）",
-          at: Date.now(),
-        });
-        await client?.sendMessage(chatId, "正在热重载…", msgId);
-        pi.sendUserMessage(`/${CMD_FEISHU_RUNTIME_RELOAD}`, { deliverAs: "followUp" });
-        break;
-      }
-
-      case "/stop": {
-        clearTaskTimeout();
-        await clarify?.abort();
-        if (streaming?.activeSession?.chatId === chatId) await streaming.abort("用户已停止当前任务");
-        // 中断当前处理 + 清空队列
-        const clearedCount = queues.pendingFor(chatId);
-
-        if (streaming?.activeSession?.chatId === chatId) client?.stopTyping(chatId, false).catch(() => {});
-        queues.reset(chatId);
-
-        if (ctxRef && !ctxRef.isIdle()) {
-          ctxRef.abort();
-          await client?.sendMessage(chatId, "已中断当前处理，队列已清空。", msgId);
-        } else if (clearedCount > 0) {
-          await client?.sendMessage(chatId, `已清空 ${clearedCount} 条排队消息。`, msgId);
-        } else {
-          await client?.sendMessage(chatId, "当前没有正在处理的任务。", msgId);
-        }
-        break;
-      }
-
-      case "/queue": {
-        const state = streaming?.activeSession?.chatId === chatId ? streaming.activeSession : null;
-        const count = queues.pendingFor(chatId);
-        const idle = ctxRef?.isIdle() ?? true;
-
-        if (!state && count === 0) {
-          await client?.sendMessage(chatId, "队列为空，当前空闲。", msgId);
-        } else {
-          let reply = idle ? "状态: 空闲" : "状态: 处理中";
-          if (count > 0) {
-            reply += `\n排队中: ${count} 条消息`;
-          }
-          await client?.sendMessage(chatId, reply, msgId);
-        }
-        break;
-      }
-
-      case "/compact": {
-        if (!ctxRef) {
-          await client?.sendMessage(chatId, "无法执行：会话上下文不可用。", msgId);
-          break;
-        }
-        const replyChatId = chatId;
-        const replyMsgId = msgId;
-        ctxRef.compact({
-          onComplete: () => {
-            void client?.sendMessage(replyChatId, "上下文压缩已完成。", replyMsgId);
-          },
-          onError: (error) => {
-            void client?.sendMessage(
-              replyChatId,
-              `上下文压缩失败：${describeError(error)}`,
-              replyMsgId,
-            );
-          },
-        });
-        await client?.sendMessage(chatId, "已触发上下文压缩…", msgId);
-        break;
-      }
-
-      case "/model": {
-        if (!ctxRef) {
-          await client?.sendMessage(chatId, "无法切换模型：会话上下文不可用。", msgId);
-          break;
-        }
-        const registry = ctxRef.modelRegistry;
-        const current = ctxRef.model;
-        const thinking = pi.getThinkingLevel();
-
-        if (!args.trim()) {
-          const available = registry.getAvailable();
-          const currentLine = current
-            ? `当前: ${formatModelRef(current)} · thinking ${thinking}`
-            : "当前: （未选择模型）";
-          const listed = buildModelListLines(available, current);
-          const header =
-            listed.mode === "scoped"
-              ? `常用模型 (enabledModels, ${listed.total}):`
-              : listed.mode === "providers"
-                ? `已配置 provider (${listed.total} 个模型，未设置 enabledModels):`
-                : "可用模型:";
-          await client?.sendMessage(
-            chatId,
-            [
-              currentLine,
-              "用法: /model <provider/id[:thinking]>",
-              "示例: /model cpa/grok45",
-              "      /model cpa/grok45:high",
-              "",
-              header,
-              ...listed.lines,
-            ].join("\n"),
-            msgId,
-          );
-          break;
-        }
-
-        const { pattern, thinking: nextThinking } = parseModelArg(args);
-        const resolved = resolveModelFromArg(registry, pattern);
-        if ("error" in resolved) {
-          await client?.sendMessage(chatId, resolved.error, msgId);
-          break;
-        }
-
-        const ok = await pi.setModel(resolved.model);
-        if (!ok) {
-          await client?.sendMessage(
-            chatId,
-            `切换失败：${formatModelRef(resolved.model)} 无可用 API key / 鉴权。`,
-            msgId,
-          );
-          break;
-        }
-
-        if (nextThinking) {
-          pi.setThinkingLevel(nextThinking);
-        }
-        const appliedThinking = pi.getThinkingLevel();
-        const busyNote = ctxRef.isIdle()
-          ? ""
-          : "\n（当前任务仍在运行，新模型将从下一轮对话生效）";
-        await client?.sendMessage(
-          chatId,
-          `已切换模型: ${formatModelRef(resolved.model)} · thinking ${appliedThinking}${busyNote}`,
-          msgId,
-        );
-        break;
-      }
-
-      case "/status": {
-        // 运行态 + 当前会话累计（与 /session 字段对齐）
-        const status = client?.getStatus() ?? "未启动";
-        const pending = queues.pendingFor(chatId);
-        let reply = `Pi 状态:\n- 飞书连接: ${status}\n- App ID: ${config.appId ? "****" + config.appId.slice(-4) : "未设置"}`;
-        const warning = accessRiskWarning(config);
-        if (warning) reply += `\n- ${warning}`;
-        if (pending > 0) {
-          reply += `\n- 排队: ${pending} 条`;
-        } else if (ctxRef && !ctxRef.isIdle()) {
-          reply += "\n- 状态: 处理中";
-        } else {
-          reply += "\n- 状态: 空闲";
-        }
-
-        if (ctxRef) {
-          const sm = ctxRef.sessionManager;
-          const stats = aggregateSessionStats(
-            sm.getEntries() as Parameters<typeof aggregateSessionStats>[0],
-          );
-          const ctxUsage = ctxRef.getContextUsage();
-          const currentModel = ctxRef.model;
-          const modelLine = currentModel
-            ? `${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`
-            : undefined;
-          const sessionLines = formatStatusSessionLines({
-            name: pi.getSessionName() ?? sm.getSessionName(),
-            sessionId: sm.getSessionId(),
-            sessionFile: sm.getSessionFile(),
-            cwd: ctxRef.cwd || sm.getCwd() || undefined,
-            ...stats,
-            context: ctxUsage
-              ? {
-                  tokens: ctxUsage.tokens,
-                  contextWindow: ctxUsage.contextWindow,
-                  percent: ctxUsage.percent,
-                }
-              : undefined,
-            modelLine,
-          });
-          reply += `\n${sessionLines.join("\n")}`;
-        }
-        await client?.sendMessage(chatId, reply, msgId);
-        break;
-      }
-
-      case "/name": {
-        const raw = args.trim();
-        if (!raw) {
-          await client?.sendMessage(
-            chatId,
-            formatNameResult(pi.getSessionName(), "show"),
-            msgId,
-          );
-          break;
-        }
-        if (raw.toLowerCase() === "clear" || raw === "-") {
-          pi.setSessionName("");
-          await client?.sendMessage(chatId, formatNameResult(undefined, "cleared"), msgId);
-          break;
-        }
-        pi.setSessionName(raw);
-        await client?.sendMessage(chatId, formatNameResult(raw, "set"), msgId);
-        break;
-      }
-
-      case "/session": {
-        if (!ctxRef) {
-          await client?.sendMessage(chatId, "无法查看：会话上下文不可用。", msgId);
-          break;
-        }
-        const sm = ctxRef.sessionManager;
-        const stats = aggregateSessionStats(sm.getEntries() as Parameters<typeof aggregateSessionStats>[0]);
-        const ctxUsage = ctxRef.getContextUsage();
-        const currentModel = ctxRef.model;
-        const modelLine = currentModel
-          ? `${formatModelRef(currentModel)} · thinking ${pi.getThinkingLevel()}`
-          : undefined;
-        await client?.sendMessage(
-          chatId,
-          formatSessionMeta({
-            name: pi.getSessionName() ?? sm.getSessionName(),
-            sessionId: sm.getSessionId(),
-            sessionFile: sm.getSessionFile(),
-            cwd: ctxRef.cwd || sm.getCwd() || undefined,
-            ...stats,
-            context: ctxUsage
-              ? {
-                  tokens: ctxUsage.tokens,
-                  contextWindow: ctxUsage.contextWindow,
-                  percent: ctxUsage.percent,
-                }
-              : undefined,
-            modelLine,
-          }),
-          msgId,
-        );
-        break;
-      }
-
-      case "/help": {
-        const helpText = [
-          "可用命令:",
-          "  /new       - 新建 Pi 会话（清空上下文）",
-          "  /resume    - 列出/恢复历史会话（/resume · /resume 3 · /resume all）",
-          "  /name      - 查看/设置会话名称（/name · /name 任务A · /name clear）",
-          "  /session   - 查看会话元信息（ID/文件/消息数/token/费用）",
-          "  /reload    - 热重载扩展/技能/主题等（等同终端 /reload）",
-          "  /stop      - 中断当前处理，清空排队",
-          "  /queue     - 查看排队状态",
-          "  /compact   - 压缩上下文",
-          "  /model     - 查看/切换模型（如 /model cpa/grok45）",
-          "  /status    - 查看 Pi 状态",
-          "  /help      - 显示帮助",
-          "",
-          "飞书扩展:",
-          "  /feishu status | monitor [reset] | config [reload] | doctor | help",
-          "",
-          "以下命令请在 Pi 终端中执行:",
-          "  /tools     - 管理工具",
-        ].join("\n");
-        await client?.sendMessage(chatId, helpText, msgId);
-        break;
-      }
-
-      default: {
-        await client?.sendMessage(
-          chatId,
-          `命令 ${cmd} 不支持通过飞书执行。请在 Pi 终端中使用。`,
-          msgId,
-        );
-        break;
-      }
-    }
+    await dispatchCommand(
+      {
+        pi,
+        get client() { return client; },
+        get ctx() { return ctxRef; },
+        get config() { return config; },
+        get streaming() { return streaming; },
+        get clarify() { return clarify; },
+        metrics,
+        configReload,
+        queues,
+        prepareSessionControl: () => prepareRemoteSessionControl(chatId),
+        reloadConfig: async () => { config = loadConfig(); await startFeishuClient(); },
+        flashStatus,
+        setPendingNotify: (notifyText: string) =>
+          setPendingFeishuNotify({ chatId, text: notifyText, at: Date.now() }),
+        setPendingResumePath,
+        clearTaskTimeout,
+      },
+      chatId,
+      msgId,
+      text,
+    );
   }
 
   // ═══════════════════════════════════════════════════════
