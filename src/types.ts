@@ -70,8 +70,6 @@ export interface FeishuConfig {
    * - interrupt：打断当前任务，仅保留最新一条再处理
    */
   sameChatBusyPolicy?: "queue" | "interrupt";
-  monitoringEnabled?: boolean;
-  streamingTransport?: "auto" | "cardkit" | "im_patch";
   /** 卡片页脚配置；未配置时使用默认两行布局 */
   footer?: FooterConfig;
 }
@@ -95,34 +93,3 @@ export interface InboundMessageContext {
 /** 桥接服务状态 */
 export type BridgeStatus = "disconnected" | "connecting" | "connected" | "error";
 
-/** settings.json 中 feishu 配置段 */
-export interface FeishuSettingsSection {
-  appId?: string;
-  appSecret?: string;
-  domain?: string;
-  encryptKey?: string;
-  verificationToken?: string;
-  flushIntervalMs?: number;
-  showThinking?: boolean;
-  printStrategy?: "fast" | "delay";
-  printStep?: number;
-  panelExpanded?: boolean;
-  maxToolSteps?: number;
-  maxThinkingRounds?: number;
-  accessPolicy?: "open" | "allowlist";
-  allowedChatIds?: string[];
-  allowedOpenIds?: string[];
-  requireMentionInGroup?: boolean;
-  streamingPanelExpanded?: boolean;
-  maxAnswerElementChars?: number;
-  maxReasoningChars?: number;
-  maxToolDetailChars?: number;
-  maxToolOutputChars?: number;
-  printFrequencyMs?: number;
-  clarifyTimeoutSec?: number;
-  taskTimeoutSec?: number;
-  sameChatBusyPolicy?: "queue" | "interrupt";
-  monitoringEnabled?: boolean;
-  streamingTransport?: "auto" | "cardkit" | "im_patch";
-  footer?: FooterConfig;
-}

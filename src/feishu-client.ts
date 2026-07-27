@@ -4,8 +4,6 @@
  * 基于 @larksuiteoapi/node-sdk 的 Client + WSClient + EventDispatcher 封装。
  * 负责：WebSocket 长连接管理、事件接收、消息发送、媒体收发、
  *        消息去重、Reaction 输入指示、交互卡片。
- *
- * 参考：openclaw-lark 项目的 lark-client.ts 和 monitor.ts
  */
 
 import * as Lark from "@larksuiteoapi/node-sdk";
@@ -15,18 +13,9 @@ import { tmpdir } from "node:os";
 import type { FeishuConfig, BridgeStatus, InboundMessageContext, InboundResource } from "./types.js";
 import { FeishuCardKitClient } from "./feishu/cardkit-client.js";
 import type { MetricsCollector } from "./monitoring/metrics.js";
-import { splitMarkdown } from "./cardkit/markdown.js";
+import { splitTextCards } from "./cardkit/markdown.js";
+import { debug as _log, warn as _warn } from "./log.js";
 export type { InboundResource } from "./types.js";
-
-// ─── 日志 ─────────────────────────────────────────────
-
-const DEBUG = false;
-function _log(...args: unknown[]): void {
-  if (DEBUG) console.log("[FeishuClient]", ...args);
-}
-function _warn(...args: unknown[]): void {
-  console.warn("[FeishuClient]", ...args);
-}
 
 // ─── 常量 ─────────────────────────────────────────────
 
@@ -341,7 +330,7 @@ export class FeishuClient {
 
   /** 发送文本消息到飞书（回复模式优先，使用 interactive 卡片格式） */
   async sendMessage(chatId: string, text: string, replyToMsgId?: string): Promise<void> {
-    const chunks = FeishuClient.splitTextCards(text);
+    const chunks = splitTextCards(text);
     for (let index = 0; index < chunks.length; index++) {
       const content = JSON.stringify(FeishuClient.buildTextCard(chunks[index]));
       const replyId = index === 0 ? replyToMsgId : undefined;
@@ -764,36 +753,8 @@ export class FeishuClient {
     return text.length > limit ? text.substring(0, limit) + "\n..." : text;
   }
 
-  /** 主动/fallback 文本切分；默认 30000 适配 interactive 卡片，可下调 */
-  static splitTextCards(text: string, limit = 30000): string[] {
-    if (!text) return [""];
-    const chunks: string[] = []; let remaining = text;
-    while (remaining.length > limit) { const split = splitMarkdown(remaining, limit); chunks.push(split.head); remaining = split.tail; }
-    chunks.push(remaining); return chunks;
-  }
-
   /** 构建纯文本卡片（用于普通消息回复，支持完整 Markdown） */
   static buildTextCard(text: string): Record<string, unknown> {
-    return FeishuClient.v2Card([
-      { tag: "markdown", content: FeishuClient.safeText(text) },
-    ]);
-  }
-
-  /** 构建流式更新卡片（状态行 + 内容，支持完整 Markdown） */
-  static buildStreamingCard(text: string, status?: string): Record<string, unknown> {
-    const elements: Record<string, unknown>[] = [];
-
-    if (status) {
-      elements.push({ tag: "markdown", content: `**${status}**` });
-    }
-
-    elements.push({ tag: "markdown", content: FeishuClient.safeText(text) });
-
-    return FeishuClient.v2Card(elements);
-  }
-
-  /** 构建完成态卡片（支持完整 Markdown） */
-  static buildFinalCard(text: string): Record<string, unknown> {
     return FeishuClient.v2Card([
       { tag: "markdown", content: FeishuClient.safeText(text) },
     ]);

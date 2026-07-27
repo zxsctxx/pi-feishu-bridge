@@ -2,8 +2,8 @@ import { FlushScheduler } from "./flush-scheduler.js";
 import { ToolTracker } from "./tool-tracker.js";
 import { UpdateQueue } from "./update-queue.js";
 
-export type CardPhase = "creating" | "streaming" | "completing" | "completed" | "creation_failed" | "failed" | "aborted" | "terminated";
-export type TerminalReason = "normal" | "llm_error" | "user_abort" | "timeout" | "replaced" | "message_unavailable" | "card_creation_failed" | "session_shutdown";
+export type CardPhase = "creating" | "streaming" | "completing" | "completed" | "failed" | "aborted" | "terminated";
+export type TerminalReason = "normal" | "llm_error" | "user_abort" | "timeout" | "replaced" | "message_unavailable" | "session_shutdown";
 export interface FooterMetrics {
   model?: string;
   inputTokens?: number;
@@ -22,10 +22,10 @@ export interface FooterMetrics {
 }
 
 const TRANSITIONS: Record<CardPhase, CardPhase[]> = {
-  creating: ["streaming", "completing", "creation_failed", "aborted", "terminated", "failed"],
+  creating: ["streaming", "completing", "failed", "aborted", "terminated"],
   streaming: ["completing", "failed", "aborted", "terminated"],
   completing: ["completed", "failed", "aborted", "terminated"],
-  completed: [], creation_failed: [], failed: [], aborted: [], terminated: [],
+  completed: [], failed: [], aborted: [], terminated: [],
 };
 
 export class CardSession {
@@ -34,9 +34,10 @@ export class CardSession {
   terminalSource = "";
   cardId: string | null = null;
   cardMessageId: string | null = null;
-  fallbackCardMessageId: string | null = null;
-  fallbackPatched = false;
-  fallbackReason = "";
+  /** 降级时承接内容的静态卡消息 id（建卡失败时创建） */
+  staticCardMessageId: string | null = null;
+  /** 终态静态卡是否已交付，避免重复投递 */
+  staticCardDelivered = false;
   answer = "";
   deliveredAnswerLength = 0;
   currentThinking = "";
@@ -59,12 +60,14 @@ export class CardSession {
   loopActiveAt: number | null = null;
   finalized = false;
   currentCardStart = 0;
-  rolloverCardIds: string[] = [];
-  rolloverMessageIds: string[] = [];
-  nativeUpdatesStopped = false;
+  /**
+   * CardKit 原生路径已不可用，后续只走静态卡 / 纯文本。
+   * 与 phase 正交：降级不改变会话生命周期阶段。
+   */
+  degraded = false;
+  degradeReason = "";
   nativeErrorCode: number | undefined;
   nativeErrorKind = "";
-  streamingAlreadyClosed = false;
   elementsInitialized = false;
   footer: FooterMetrics = { apiCalls: 0 };
 
@@ -90,12 +93,6 @@ export class CardSession {
       this.terminalSource = source;
       this.completedAt = Date.now();
     }
-    return true;
-  }
-
-  resolveCreationFailure(next: "completed" | "failed" | "aborted" | "terminated", reason: TerminalReason, source: string): boolean {
-    if (this.phase !== "creation_failed") return false;
-    this.phase = next; this.terminalReason = reason; this.terminalSource = source; this.completedAt = Date.now();
     return true;
   }
 
@@ -125,9 +122,9 @@ export class CardSession {
     return Math.max(0, (end - this.loopStartedAt) / 1000);
   }
 
-  appendText(delta: string): void { if ((!this.terminal || this.phase === "creation_failed") && delta) { this.finishThinking(); this.beginStreaming(); this.answer += delta; this.answerDirty = true; } }
+  appendText(delta: string): void { if (!this.terminal && delta) { this.finishThinking(); this.beginStreaming(); this.answer += delta; this.answerDirty = true; } }
   appendThinking(delta: string): void {
-    if ((!this.terminal || this.phase === "creation_failed") && delta) {
+    if (!this.terminal && delta) {
       this.beginStreaming();
       this.markLoopActivity();
       this.currentThinking += delta;

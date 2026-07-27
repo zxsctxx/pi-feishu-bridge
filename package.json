@@ -1,7 +1,7 @@
 {
   "name": "pi-feishu-bridge",
-  "version": "2.0.18",
-  "description": "Pi-Feishu Bridge: Feishu WebSocket channel with CardKit and IM PATCH streaming transports",
+  "version": "3.0.0",
+  "description": "Pi-Feishu Bridge: Feishu WebSocket channel with CardKit native streaming",
   "type": "module",
   "main": "src/index.ts",
   "license": "MIT",
@@ -31,8 +31,7 @@
     "docs",
     "examples/settings.example.json",
     "README.md",
-    "LICENSE",
-    "RELEASE_NOTES_v2.0.18.md"
+    "LICENSE"
   ],
   "pi": {
     "extensions": [

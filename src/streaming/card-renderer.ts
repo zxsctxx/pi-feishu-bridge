@@ -4,8 +4,6 @@ import type { ToolStep } from "./tool-tracker.js";
 
 export const ANSWER_ELEMENT_ID = "answer_content";
 export const PANEL_ELEMENT_ID = "agent_process_panel";
-/** @deprecated 多元素面板后不再使用单 markdown 内容 id；保留导出以免外部引用断裂 */
-export const PANEL_CONTENT_ELEMENT_ID = "agent_process_text";
 export const STATUS_ELEMENT_ID = "terminal_status";
 export const FOOTER_ELEMENT_ID = "footer_metrics";
 export const LOADING_HINT_ELEMENT_ID = "context_loading_hint";
@@ -169,7 +167,7 @@ export function buildPanelTitle(session: CardSession, toolCount: number, termina
 }
 
 /**
- * 统一过程面板：多子元素结构（对齐 hermes-lark-streaming）。
+ * 统一过程面板：推理与工具按时间线排列的多子元素结构。
  * - 工具 detail → plain_text（避免 JSON 被 markdown 当成代码块）
  * - 工具 output → 安全 fence 代码块（可控展示）
  * - 推理 → 独立 div/lark_md，不与工具拼成单段 markdown
@@ -435,8 +433,8 @@ export function buildFallbackText(session: CardSession, options: CardRenderOptio
     else answerSection = "处理结束，但未生成文本回复。";
   }
   const sections = [
-    session.fallbackReason
-      ? `> ⚠️ CardKit 原生流式不可用，已切换兼容模式：${truncate(session.fallbackReason, 800)}`
+    session.degradeReason
+      ? `> ⚠️ CardKit 原生流式不可用，已降级为静态卡片：${truncate(session.degradeReason, 800)}`
       : "",
     timeline ? `### ${title}\n\n${timeline}` : "",
     `### 回答\n\n${answerSection}`,
@@ -457,8 +455,8 @@ export function buildFallbackCard(
         ? `⚠️ 已终止：${truncate(session.errorMessage, 1000)}`
         : session.errorMessage
           ? `❌ 处理失败：${truncate(session.errorMessage, 1000)}`
-          : "✅ 已完成（CardKit 兼容模式）"
-    : "⚠️ CardKit 原生流式不可用，正在使用兼容更新模式…";
+          : "✅ 已完成（静态卡片模式）"
+    : "⚠️ CardKit 原生流式不可用，处理中…";
   return {
     schema: "2.0",
     config: {

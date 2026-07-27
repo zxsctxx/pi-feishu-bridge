@@ -16,7 +16,7 @@
 - 创建 CardKit 卡片实例
 - 更新 CardKit 元素、批量更新卡片与更新卡片 settings
 
-`cardkit:card:read` 不是创建流式卡片的核心权限，但建议一并开通；`im:message:update` 用于普通交互卡兼容降级。应用权限变更后必须重新发布应用版本并重新授权测试租户，旧 token 不会自动获得新 scope。
+`cardkit:card:read` 不是创建流式卡片的核心权限，但建议一并开通；`im:message:update` 用于 CardKit 不可用时的静态卡降级。应用权限变更后必须重新发布应用版本并重新授权测试租户，旧 token 不会自动获得新 scope。
 
 事件订阅：
 
