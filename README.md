@@ -1,25 +1,22 @@
-# Pi-Feishu Bridge 3.0
+# Pi-Feishu Bridge 2.0
 
-通过飞书/Lark 官方 Bot API WebSocket 长连接，将飞书作为 Pi（`>=0.80.6 <0.82.0`）的受控聊天入口。使用 CardKit v2 原生元素流式 API 输出。
+通过飞书/Lark 官方 Bot API WebSocket 长连接，将飞书作为 Pi（`>=0.80.6 <0.82.0`）的受控聊天入口。2.0 使用 CardKit v2 原生元素流式 API，不再用整卡 PATCH 模拟流式输出。
 
 ## 主要能力
 
 - CardKit `card.create` + `card_id` 引用消息 + `cardElement.content` 原生流式输出
 - thinking 与工具调用统一时间线，工具严格按 `toolCallId` 关联
 - 合法状态机、单调 sequence、幂等 UUID、串行 flush 和 `agent_settled` 唯一正常封卡
-- 300305/300309/300313、429/5xx、消息撤回处理与长回答 rollover
-- 两层降级：CardKit 原生 → 静态卡片 → 纯文本必达
+- 300305/300309/300313、429/5xx、消息撤回、静态尾部 fallback 和长回答 rollover
 - 页脚展示模型、token、费用、缓存、上下文、API 调用与停止原因
 - allowlist、群聊 mention、monitor、doctor、配置重载和 `ask_feishu` 澄清卡片
-- WebSocket、文本/富文本/图片/文件/音频/视频收发、Reaction 与主动发送工具
+- 保留 WebSocket、文本/富文本/图片/文件/音频/视频收发、Reaction 与主动发送工具
 
 ## 安装
 
 ```bash
-pi install ./pi-feishu-bridge-3.0.0.tgz
+pi install ./pi-feishu-bridge-2.0.18.tgz
 ```
-
-从 2.x 升级请先看 [docs/migration-3.0.md](docs/migration-3.0.md) —— 配置键名有破坏性变更。
 
 兼容范围：`@earendil-works/pi-coding-agent >=0.80.6 <0.82.0`（已覆盖 Pi 0.81.x，含当前 0.81.1）。
 
@@ -61,33 +58,30 @@ pi install ./pi-feishu-bridge-3.0.0.tgz
 
 ## 配置
 
-配置来源优先级为 CLI、`FEISHU_*` 环境变量、项目 `.pi/settings.json`、全局 `~/.pi/agent/settings.json`。**settings.json 只接受 camelCase**（3.0 起不再兼容 snake_case）。完整示例见 [examples/settings.example.json](examples/settings.example.json)。
+配置来源优先级为 CLI、`FEISHU_*` 环境变量、项目 `.pi/settings.json`、全局 `~/.pi/agent/settings.json`。字段兼容 camelCase 与 snake_case。完整示例见 [examples/settings.example.json](examples/settings.example.json)。
 
-超出范围的数值会被钳制到边界，非数值回落到默认值。
+关键字段：
 
-| 字段 | 默认值 | 范围 | 说明 |
-|---|---:|:---:|---|
-| `appId` / `appSecret` | 无 | — | 飞书应用凭据 |
-| `domain` | `feishu` | — | `feishu` 或 `lark` |
-| `flushIntervalMs` | 200 | 80–2000 | 流式刷新节流间隔 |
-| `showThinking` | false | — | 默认不展示推理正文 |
-| `maxAnswerElementChars` | 30000 | 1000–30000 | 超过后创建“续”卡 |
-| `maxReasoningChars` | 3500 | 200–30000 | 单轮推理正文展示上限 |
-| `maxToolDetailChars` | 500 | 50–10000 | 工具参数/detail 展示与存储上限 |
-| `maxToolOutputChars` | 800 | 50–10000 | 工具输出展示与存储上限 |
-| `printFrequencyMs` | 70 | 20–1000 | CardKit `print_frequency_ms` |
-| `maxToolSteps` | 20 | 1–200 | 过程面板最多展示的工具数 |
-| `maxThinkingRounds` | 20 | 1–200 | 过程面板最多展示的推理轮数 |
-| `accessPolicy` | `allowlist` | — | 默认白名单；开发可显式设 `open` |
-| `allowedChatIds` / `allowedOpenIds` | `[]` | — | 见上方匹配规则 |
-| `requireMentionInGroup` | false | — | 生产群聊建议 true |
-| `clarifyTimeoutSec` | 300 | 10–3600 | `ask_feishu` 默认等待时间 |
-| `taskTimeoutSec` | 900 | 30–86400 | 单轮 Agent 硬超时（秒），超时 abort 并终态封卡 |
-| `sameChatBusyPolicy` | `queue` | — | 同 chat 忙时：`queue` 排队；`interrupt` 打断当前并只跑最新消息 |
-| `footer.showFooter` | true | — | 是否在终态卡片显示页脚 |
-| `footer.lines` | 见下 | — | 二维数组：外层=行，内层=同行字段 |
-
-调试日志：设 `FEISHU_DEBUG=1`。
+| 字段 | 默认值 | 说明 |
+|---|---:|---|
+| `appId` / `appSecret` | 无 | 飞书应用凭据 |
+| `domain` | `feishu` | `feishu` 或 `lark` |
+| `flushIntervalMs` | 200 | 80–2000ms 建议范围 |
+| `streamingTransport` | `auto` | `auto` 探测 CardKit；`cardkit` 强制原生；`im_patch` 使用 1.x 兼容流式 |
+| `showThinking` | false | 默认不展示推理正文；兼容 `show_thinking`、`showReasoning`、`show_reasoning` |
+| `maxAnswerElementChars` | 30000 | 超过后创建“续”卡 |
+| `maxReasoningChars` | 3500 | 单轮推理正文展示上限 |
+| `maxToolDetailChars` | 500 | 工具参数/detail 展示与存储上限 |
+| `maxToolOutputChars` | 800 | 工具输出展示与存储上限 |
+| `printFrequencyMs` | 70 | CardKit `print_frequency_ms`（20–1000） |
+| `accessPolicy` | `allowlist` | 默认白名单；开发可显式设 `open` |
+| `allowedChatIds` / `allowedOpenIds` | `[]` | 见上方匹配规则 |
+| `requireMentionInGroup` | false | 生产群聊建议 true |
+| `clarifyTimeoutSec` | 300 | `ask_feishu` 默认等待时间 |
+| `taskTimeoutSec` | 900 | 单轮 Agent 硬超时（秒），超时 abort 并终态封卡；可用 `FEISHU_TASK_TIMEOUT_SEC` |
+| `sameChatBusyPolicy` | `queue` | 同 chat 忙时：`queue` 排队；`interrupt` 打断当前并只跑最新消息。环境变量 `FEISHU_SAME_CHAT_BUSY_POLICY` |
+| `footer.showFooter` | true | 是否在终态卡片显示页脚 |
+| `footer.lines` | 见下 | 二维数组：外层=行，内层=同行字段 |
 
 ### 页脚布局（`footer.lines`）
 
@@ -146,25 +140,9 @@ pi install ./pi-feishu-bridge-3.0.0.tgz
 - `send_file_to_feishu`
 - `ask_feishu`：发送选择卡，只接受访问策略授权用户的 action；支持超时、abort 和重复点击幂等处理。
 
-## 降级行为
-
-CardKit 原生流式不可用时（建卡失败或流式中断），会依次降级：
-
-```
-CardKit 原生流式
-  ↓ 失败
-静态卡片（占位一次 + 终态一次，流式期间不更新）
-  ↓ 失败
-纯文本消息（必达）
-```
-
-任何路径下答案都会送达；降级只影响是否有流式体感。`/feishu doctor` 可探测 CardKit 是否可用。
-
 ## 飞书权限与事件
 
-所需权限、事件订阅及 CardKit 开通项见 [docs/permissions.md](docs/permissions.md)。真实安装和 12 项验收步骤见 [docs/real-environment-smoke-test.md](docs/real-environment-smoke-test.md)。
-
-升级指南：[3.0](docs/migration-3.0.md) · [2.0](docs/migration-2.0.md)。
+所需权限、事件订阅及 CardKit 开通项见 [docs/permissions.md](docs/permissions.md)。
 
 ## 开发验证
 
@@ -182,7 +160,7 @@ npm pack --dry-run
 - **渠道与 Bot 侧**（WebSocket、消息收发、扩展入口等）：早期参考 / 演进自 [surenkid/pi-feishu](https://github.com/surenkid/pi-feishu)（以对方仓库 LICENSE 为准）。
 - **CardKit 流式状态机、统一时间线、降级与元素安全网**：设计参考 Hermes Lark Streaming v1.5.0（MIT）。本项目以 TypeScript 与 Pi 公开扩展事件重新实现，未移植其 Python Monkey Patch、Gateway wrapper 或内部 session manager。
 
-自 2.0 起实现与产品边界已大幅重写，3.0 进一步重构了降级链路与内部结构；本仓库为独立维护的 `pi-feishu-bridge`，与上述上游无自动同步关系。感谢原作者的工作。
+自 2.0 起实现与产品边界已大幅重写；本仓库为独立维护的 `pi-feishu-bridge`，与上述上游无自动同步关系。感谢原作者的工作。
 
 ## License
 
