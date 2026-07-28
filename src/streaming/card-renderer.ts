@@ -12,7 +12,7 @@ export const LOADING_ELEMENT_ID = "loading_icon";
 /** 默认两行布局，保持与 2.0 既有行为一致 */
 export const DEFAULT_FOOTER_LINES: FooterFieldId[][] = [
   ["status", "elapsed", "model", "api_calls"],
-  ["tokens", "context", "cache", "error"],
+  ["tokens", "cache", "context", "error"],
 ];
 
 const FOOTER_FIELD_ALIASES: Record<string, FooterFieldId> = {

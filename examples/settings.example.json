@@ -27,7 +27,7 @@
       "showFooter": true,
       "lines": [
         ["status", "elapsed", "model", "api_calls"],
-        ["tokens", "context", "cache", "error"]
+        ["tokens", "cache", "context", "error"]
       ]
     }
   }

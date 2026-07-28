@@ -106,7 +106,7 @@ pi install ./pi-feishu-bridge-3.0.0.tgz
       "showFooter": true,
       "lines": [
         ["status", "elapsed", "model", "api_calls"],
-        ["tokens", "context", "cache", "error"]
+        ["tokens", "cache", "context", "error"]
       ]
     }
   }

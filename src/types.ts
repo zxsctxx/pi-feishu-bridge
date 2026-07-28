@@ -21,7 +21,7 @@ export type FooterFieldId =
  * 页脚布局配置。
  * `lines` 为二维数组：外层 = 行，内层 = 同行字段（用 ` · ` 连接）。
  * 默认：
- *   [[status, elapsed, model, api_calls], [tokens, context, cache, error]]
+ *   [[status, elapsed, model, api_calls], [tokens, cache, context, error]]
  */
 export interface FooterConfig {
   showFooter?: boolean;
