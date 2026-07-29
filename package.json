@@ -28,6 +28,8 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
+    "docs/permissions.md",
+    "docs/migration-3.0.md",
     "examples/settings.example.json",
     "README.md",
     "LICENSE"
