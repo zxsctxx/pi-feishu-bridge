@@ -1,6 +1,6 @@
 {
   "name": "pi-feishu-bridge",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Pi-Feishu Bridge: Feishu WebSocket channel with CardKit native streaming",
   "type": "module",
   "main": "src/index.ts",
