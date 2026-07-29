@@ -28,7 +28,6 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
-    "docs",
     "examples/settings.example.json",
     "README.md",
     "LICENSE"
