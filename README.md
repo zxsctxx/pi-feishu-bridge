@@ -4,14 +4,15 @@
 
 ## 主要能力
 
-- CardKit `card.create` + `card_id` 引用消息 + `cardElement.content` 原生流式输出
-- thinking 与工具调用统一时间线，工具严格按 `toolCallId` 关联
-- 合法状态机、单调 sequence、幂等 UUID、串行 flush 和 `agent_settled` 唯一正常封卡
-- 300305/300309/300313、429/5xx、消息撤回处理与长回答 rollover
-- 两层降级：CardKit 原生 → 静态卡片 → 纯文本必达
-- 页脚展示模型、token、费用、缓存、上下文、API 调用与停止原因
-- allowlist、群聊 mention、monitor、doctor、配置重载和 `ask_feishu` 澄清卡片
-- WebSocket、文本/富文本/图片/文件/音频/视频收发、Reaction 与主动发送工具
+- **流式卡片输出** — 借助飞书 CardKit，实时将回答流式刷新到聊天窗口
+- **Thinking 与工具可视化** — 模型推理过程和工具调用步骤在面板中实时展示
+- **自动降级保障** — CardKit 不可用时自动降级为静态卡片或纯文本，答案必达
+- **信息页脚** — 每轮回答末尾展示模型、耗时、token、费用、API 调用数等
+- **访问控制** — 支持 allowlist 白名单和群聊 @ 校验，未授权请求无法进入 Pi
+- **长回答分卡** — 超长回答自动创建续卡，代码围栏等内容不丢失
+- **弹性容错** — 限频、网络超时、消息撤回等异常可自动恢复或优雅终止
+- **媒体收发** — 文本/富文本/图片/文件/音频/视频，支持 Reaction 交互
+- **实用工具** — 向飞书发送消息/图片/文件，以及交互式选择澄清卡片
 
 ## 安装
 
@@ -130,13 +131,13 @@ pi install ./pi-feishu-bridge-3.0.0.tgz
 
 | 命令 | 作用 |
 |------|------|
-| `/new` | 真正新建 Pi 会话（清空上下文；经内部命令调用 `ctx.newSession`） |
-| `/resume` | 列出/恢复历史会话（`/resume` 列表；`/resume 3` 按编号；`/resume <id前缀|名称>` 匹配；`/resume all` 全部工作目录） |
+| `/new` | 新建 Pi 会话（清空上下文，重新开始） |
+| `/resume` | 列出/恢复历史会话（`/resume` 列表；`/resume 3` 按编号；`/resume <id|名称>` 匹配；`/resume all` 全部工作目录） |
 | `/name` | 查看/设置会话显示名（`/name` · `/name 任务A` · `/name clear`） |
 | `/session` | 查看会话元信息（名称、ID、文件、消息数、token、费用、上下文） |
-| `/reload` | 等同终端 `/reload`（热重载扩展/技能/主题等；`/feishu config reload` 仅重载飞书配置） |
-| `/compact` | 压缩上下文 |
-| `/model` | 查看/切换模型；列表优先显示 `settings.enabledModels`；支持 `/model cpa/grok45`、`/model cpa/grok45:high` |
+| `/reload` | 等同终端 `/reload`（热重载扩展/技能/主题等） |
+| `/compact` | 压缩上下文，节省 token |
+| `/model` | 查看/切换模型（`/model` 列表；`/model cpa/grok45`；`/model cpa/grok45:high`） |
 | `/stop` / `/queue` / `/status` / `/help` | 中断、排队、状态、帮助 |
 
 ## LLM 工具
@@ -162,18 +163,9 @@ CardKit 原生流式
 
 ## 飞书权限与事件
 
-所需权限、事件订阅及 CardKit 开通项见 [docs/permissions.md](docs/permissions.md)。真实安装和 12 项验收步骤见 [docs/real-environment-smoke-test.md](docs/real-environment-smoke-test.md)。
+所需权限、事件订阅及 CardKit 开通项见 [docs/permissions.md](docs/permissions.md)。
 
-升级指南：[3.0](docs/migration-3.0.md) · [2.0](docs/migration-2.0.md)。
-
-## 开发验证
-
-```bash
-npm ci
-npm run typecheck
-npm test
-npm pack --dry-run
-```
+升级指南：[3.0](docs/migration-3.0.md)。
 
 ## 来源致谢
 
