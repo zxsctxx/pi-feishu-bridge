@@ -476,7 +476,7 @@ export default function (pi: ExtensionAPI) {
     const update = event.assistantMessageEvent;
     if (update.type === "text_delta") {
       streaming?.onTextDelta(update.delta);
-      flashStatus("飞书: 正在流式输出");
+      if (streaming?.activeSession) flashStatus("飞书: 正在流式输出");
     } else if (update.type === "thinking_delta") {
       streaming?.onThinkingDelta(update.delta);
     } else if (update.type === "error") {
@@ -521,7 +521,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("tool_execution_start", (event) => {
     streaming?.onToolStart(event.toolCallId, event.toolName, event.args);
-    flashStatus(`飞书: 🔧 ${toolDisplayName(event.toolName)}...`);
+    if (streaming?.activeSession) flashStatus(`飞书: 🔧 ${toolDisplayName(event.toolName)}...`);
   });
 
   pi.on("tool_execution_update", (event) => {
