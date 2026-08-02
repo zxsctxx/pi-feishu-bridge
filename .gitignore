@@ -44,3 +44,6 @@ Desktop.ini
 
 # npm pack artifacts
 *.tgz
+
+# pi-subagents 运行时工件
+.pi-subagents/
