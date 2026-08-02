@@ -241,7 +241,9 @@ export class FeishuClient {
         "card.action.trigger": (data: any) => {
           const value = data?.action?.value;
           const parsed = typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return {}; } })() : (value ?? {});
-          const clarifyId = parsed.clarify_id; const choice = parsed.choice;
+          const clarifyId = parsed.clarify_id ?? data?.action?.name;
+          // 下拉框（select_static）：选中值经 action.option 回传，元素 value 携带 clarify_id
+          const choice = data?.action?.option ?? parsed.choice;
           const senderOpenId = data?.operator?.open_id ?? "";
           if (typeof clarifyId === "string" && typeof choice === "string") this.onCardActionCallback?.({ clarifyId, choice, senderOpenId });
         },
@@ -422,7 +424,11 @@ export class FeishuClient {
       }
     } catch (err: any) {
       _warn("Send card failed:", err?.message ?? err);
-      return null;
+      // 抛出让调用方（澄清卡/降级卡）能拿到真实原因；提取飞书 HTTP 错误里的 code/msg
+      const detail = extractApiErrorDetail(err);
+      throw err instanceof Error
+        ? new Error(detail ? `${err.message} | ${detail}` : err.message)
+        : new Error(String(err));
     }
   }
 
@@ -899,4 +905,21 @@ export class FeishuClient {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 从飞书 SDK/axios 错误中提取 API 返回的 code/msg 详情 */
+function extractApiErrorDetail(err: any): string {
+  const data = err?.response?.data;
+  if (!data) return "";
+  if (typeof data === "string") return data.slice(0, 200);
+  try {
+    const code = data.code ?? data.status_code;
+    const msg = data.msg ?? data.message ?? data.error_description ?? data.error;
+    const parts: string[] = [];
+    if (code !== undefined) parts.push(`code=${code}`);
+    if (msg) parts.push(`msg=${msg}`);
+    return parts.length ? parts.join(" ").slice(0, 300) : JSON.stringify(data).slice(0, 300);
+  } catch {
+    return String(data).slice(0, 300);
+  }
 }

@@ -9,7 +9,7 @@ import type { Static } from "typebox";
 import type { FeishuClient } from "./feishu-client.js";
 import type { FeishuConfig } from "./types.js";
 import type { StreamingCardManager } from "./streaming/card-manager.js";
-import type { ClarifyManager } from "./clarify/manager.js";
+import type { ClarifyManager, ClarifyOption } from "./clarify/manager.js";
 import { describeError } from "./log.js";
 
 /** 通过 getter 读取扩展的可变状态，避免注册时快照 */
@@ -51,12 +51,44 @@ const AskFeishuParams = {
   type: "object" as const,
   properties: {
     question: { type: "string" as const, description: "需要用户澄清的问题" },
-    choices: { type: "array" as const, items: { type: "string" as const }, minItems: 1, maxItems: 10 },
+    choices: {
+      type: "array" as const,
+      items: { type: "string" as const },
+      minItems: 1,
+      maxItems: 10,
+      description: "选项列表（纯文本，兼容旧用法；有 options 时忽略）",
+    },
+    options: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        properties: {
+          value: { type: "string" as const, description: "选中后返回的值" },
+          label: { type: "string" as const, description: "按钮显示文本" },
+          description: { type: "string" as const, description: "可选描述，显示在按钮下方" },
+        },
+        required: ["value", "label"],
+      },
+      minItems: 1,
+      maxItems: 10,
+      description: "结构化选项（类似 questionnaire：value/label/description）；存在时优先于 choices",
+    },
     chat_id: { type: "string" as const, description: "目标聊天 ID；留空使用当前聊天" },
     timeout_seconds: { type: "number" as const, description: "等待秒数，默认使用配置值" },
   },
-  required: ["question", "choices"],
+  required: ["question"],
 };
+
+/** 归一化选项：options 优先，否则 choices 纯字符串转为 {value,label} */
+function normalizeOptions(params: Static<typeof AskFeishuParams>): ClarifyOption[] {  if (params.options?.length) {
+    return params.options.map((o) => {
+      const option: ClarifyOption = { value: o.value!, label: o.label! };
+      if (o.description) option.description = o.description;
+      return option;
+    });
+  }
+  return (params.choices ?? []).map((c) => ({ value: c, label: c }));
+}
 
 const SendToFeishuParams = {
   type: "object" as const,
@@ -93,7 +125,8 @@ export function registerTools(pi: ExtensionAPI, deps: ToolDeps): void {
   pi.registerTool({
     name: "ask_feishu",
     label: "向飞书用户提问",
-    description: "通过飞书交互式选择卡片向授权用户澄清问题，并等待其选择。",
+    description:
+      "通过飞书交互式选择卡片向授权用户澄清问题，并等待其选择。仅当对话通过飞书远程进行时使用（向飞书用户提问）；在本机 TUI 终端会话中请改用 questionnaire 工具。",
     parameters: AskFeishuParams,
     executionMode: "sequential",
     async execute(_toolCallId, params: Static<typeof AskFeishuParams>, signal) {
@@ -101,7 +134,11 @@ export function registerTools(pi: ExtensionAPI, deps: ToolDeps): void {
       if ("error" in target) return target.error;
       const { chatId } = target;
 
-      if (!deps.clarify || !params.question || !params.choices?.length) {
+      if (!deps.clarify || !params.question) {
+        return result("错误: 澄清管理器不可用或参数不完整。");
+      }
+      const options = normalizeOptions(params);
+      if (!options.length) {
         return result("错误: 澄清管理器不可用或参数不完整。");
       }
       // 澄清卡会等待用户操作，必须遵守 allowlist
@@ -115,7 +152,7 @@ export function registerTools(pi: ExtensionAPI, deps: ToolDeps): void {
         const choice = await deps.clarify.ask(
           chatId,
           params.question,
-          params.choices,
+          options,
           deps.config.allowedOpenIds ?? [],
           timeout,
           signal,

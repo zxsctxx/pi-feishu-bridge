@@ -288,7 +288,7 @@ export default function (pi: ExtensionAPI) {
       printFrequencyMs: Math.max(20, Math.min(1000, config.printFrequencyMs ?? 70)),
       footer: config.footer,
     }, metrics);
-    clarify = new ClarifyManager(client);
+    clarify = new ClarifyManager(client.createCardKitClient(metrics));
 
     client.setOnMessage((context) => {
       handleFeishuMessage(context);
