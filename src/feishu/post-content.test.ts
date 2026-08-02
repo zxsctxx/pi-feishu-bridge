@@ -98,11 +98,63 @@ describe("片段类型", () => {
     expect(resources).toHaveLength(1);
   });
 
-  it("忽略未知 tag", () => {
+  it("行内代码片段保留内容", () => {
+    const { text } = parse(post([[{ tag: "code", text: "console.log(1)" }]]));
+    expect(text).toBe("console.log(1)");
+  });
+
+  it("代码与文本混合按顺序拼接", () => {
     const { text } = parse(
-      post([[{ tag: "text", text: "保留" }, { tag: "未知类型", text: "丢弃" }]]),
+      post([
+        [
+          { tag: "text", text: "运行 " },
+          { tag: "code", text: "npm ci" },
+          { tag: "text", text: " 安装依赖" },
+        ],
+      ]),
     );
-    expect(text).toBe("保留");
+    expect(text).toBe("运行 npm ci 安装依赖");
+  });
+
+  it("代码块保留语言与内容", () => {
+    const { text } = parse(
+      post([
+        [{ tag: "text", text: "示例：" }],
+        [{ tag: "code_block", language: "ts", text: "const a = 1;" }],
+      ]),
+    );
+    expect(text).toBe("示例：\n```ts\nconst a = 1;\n```");
+  });
+
+  it("媒体占位并记入 resources", () => {
+    const { text, resources } = parse(
+      post([[{ tag: "media", file_key: "file_key_1" }]]),
+    );
+    expect(text).toBe("[媒体]");
+    expect(resources).toEqual([{ type: "file", fileKey: "file_key_1" }]);
+  });
+
+  it("表情保留占位", () => {
+    const { text } = parse(post([[{ tag: "emotion", emoji_type: "SMILE" }]]));
+    expect(text).toBe("[表情]");
+  });
+
+  it("hr 分割线保留为分隔", () => {
+    const { text } = parse(
+      post([
+        [{ tag: "text", text: "上文" }],
+        [{ tag: "hr" }],
+        [{ tag: "text", text: "下文" }],
+      ]),
+    );
+    expect(text).toBe("上文\n---\n下文");
+  });
+
+  it("未知 tag 兜底保留文本", () => {
+    const { text } = parse(
+      post([[{ tag: "text", text: "保留" }, { tag: "未知类型", text: "也保留" }]]),
+    );
+    expect(text).toBe("保留也保留");
   });
 });
 
@@ -113,6 +165,41 @@ describe("locale 回退与边界", () => {
       [],
     );
     expect(text).toBe("hello");
+  });
+
+  it("新版无 locale 结构的 post（有序列表真实结构）", () => {
+    // 飞书新版富文本编辑器（Ctrl+Shift+7 有序列表）发送的结构：顶层直接 {title, content, content_v2}，无 zh_cn/en_us 包装
+    const { text } = parse({
+      title: "",
+      content: [[
+        { tag: "text", text: "1. ", style: [] },
+        { tag: "text", text: "测试", style: [] },
+      ]],
+      content_v2: [[
+        { tag: "text", text: "1. ", style: [] },
+        { tag: "text", text: "测试", style: [] },
+      ]],
+    });
+    expect(text).toBe("1. 测试");
+  });
+
+  it("新版结构多行有序列表保留换行", () => {
+    const { text } = parse({
+      content: [[
+        { tag: "text", text: "1. 第一项" },
+      ], [
+        { tag: "text", text: "2. 第二项" },
+      ]],
+    });
+    expect(text).toBe("1. 第一项\n2. 第二项");
+  });
+
+  it("content 为空时回退到 content_v2", () => {
+    const { text } = parse({
+      content: [],
+      content_v2: [[{ tag: "text", text: "v2 内容" }]],
+    });
+    expect(text).toBe("v2 内容");
   });
 
   it("空内容返回空串", () => {

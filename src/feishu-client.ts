@@ -80,6 +80,9 @@ interface PostElement {
   user_id?: string;
   user_name?: string;
   image_key?: string;
+  file_key?: string;
+  language?: string;
+  emoji_type?: string;
 }
 
 /**
@@ -93,13 +96,21 @@ interface PostElement {
  */
 export function parsePostContent(parsed: unknown, resources: InboundResource[]): string {
   const root = parsed as Record<string, any> | null | undefined;
-  const locale = root?.zh_cn ?? root?.en_us ?? root?.ja_jp;
+  // 兼容两种 content 结构：旧版按 locale（zh_cn/en_us/ja_jp）包装，
+  // 新版富文本编辑器（如有序列表 Ctrl+Shift+7）直接暴露 {title, content, content_v2}，无 locale 键
+  const body = root?.zh_cn ?? root?.en_us ?? root?.ja_jp ?? root;
   const lines: string[] = [];
 
-  if (locale?.title) lines.push(String(locale.title));
+  if (body?.title) lines.push(String(body.title));
 
-  if (Array.isArray(locale?.content)) {
-    for (const row of locale.content) {
+  // 新版富文本同时带 content 与 content_v2（两者内容一致）；content 缺失/为空时回退到 content_v2
+  const content = Array.isArray(body?.content) && body.content.length > 0
+    ? body.content
+    : Array.isArray(body?.content_v2) ? body.content_v2
+    : null;
+
+  if (Array.isArray(content)) {
+    for (const row of content) {
       if (!Array.isArray(row)) continue;
       const segments: string[] = [];
       for (const elem of row as PostElement[]) {
@@ -107,6 +118,17 @@ export function parsePostContent(parsed: unknown, resources: InboundResource[]):
           case "text":
           case "md":
             if (elem.text) segments.push(elem.text);
+            break;
+          case "code":
+            // 行内代码：飞书客户端会把反引号内容转成该片段，缺失则整行内容丢失
+            if (elem.text) segments.push(elem.text);
+            break;
+          case "code_block":
+            // 代码块：保留语言与内容，输出 markdown 代码块语法
+            if (elem.text) {
+              const lang = elem.language ? elem.language + "\n" : "";
+              segments.push("```" + lang + elem.text + "\n```");
+            }
             break;
           case "a":
             // 保留 URL，否则模型只看到锚文本无法访问链接
@@ -119,6 +141,21 @@ export function parsePostContent(parsed: unknown, resources: InboundResource[]):
           case "img":
             segments.push("[图片]");
             if (elem.image_key) resources.push({ type: "image", fileKey: elem.image_key });
+            break;
+          case "media":
+            segments.push("[媒体]");
+            if (elem.file_key) resources.push({ type: "file", fileKey: elem.file_key });
+            break;
+          case "emotion":
+            segments.push("[表情]");
+            break;
+          case "hr":
+            // 水平分割线：保留分隔语义，避免该行被整体丢弃
+            segments.push("---");
+            break;
+          default:
+            // 未知 tag 兜底保留文本，防止内容静默丢失（与官方 SDK 一致）
+            if (elem.text) segments.push(elem.text);
             break;
         }
       }
@@ -607,7 +644,11 @@ export class FeishuClient {
       // 解析消息内容和资源
       const { text, resources } = this.parseContentWithResources(msg.content, msg.message_type, msg.mentions);
 
-      if (!text && resources.length === 0) return;
+      if (!text && resources.length === 0) {
+        // 内容为空即被丢弃：打日志便于排查无法入站的格式（如新版富文本 post 结构）
+        _warn(`Drop empty inbound: type=${msg.message_type} content=${msg.content}`);
+        return;
+      }
 
       _log(
         `Inbound: chatId=${chatId}, type=${chatType}, msgId=${messageId}, ` +
