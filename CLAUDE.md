@@ -2,8 +2,8 @@
 
 Pi coding agent 的飞书/Lark 扩展。飞书消息进来 → Pi 跑 → 输出以 CardKit v2 原生流式卡片实时刷回聊天窗。
 
-**当前版本：** 3.0.1（master 主干）。3.0 重构已在 `refactor/3.0` 分支完成并通过 PR #1 合并进 master；3.0.1 相对 3.0.0 仅含版本号变更（`package.json` 与 `src/version.ts`），无功能差异。
-**总代码量：** ~5465 行源码（33 模块） + ~1572 行测试（11 文件）。
+**当前版本：** 3.1.0（master 主干）。3.0 重构已在 `refactor/3.0` 分支完成并通过 PR #1 合并进 master；3.1.0 在 3.0.1 基础上新增截断标注、澄清卡 CardKit v2 升级、富文本 post 解析增强等。
+**总代码量：** ~5630 行源码（33 模块） + ~1868 行测试（13 文件）。
 
 ## 命令
 
@@ -61,7 +61,7 @@ CardKit 错误码：`300305` 元素超限（裁剪面板重试）· `300309` 流
 | `streaming/tool-tracker.ts` | 工具调用追踪、展示与敏感字段脱敏 |
 | `streaming/flush-scheduler.ts` | 流式刷新节流调度 |
 | `streaming/update-queue.ts` | CardKit 更新串行队列（即「更新串行」不变量的实现） |
-| `feishu-client.ts` (~861 行) | WebSocket、消息收发、媒体、去重 |
+| `feishu-client.ts` (~925 行) | WebSocket、消息收发、媒体、去重 |
 | `feishu/cardkit-client.ts` | CardKit API 调用与重试 |
 | `feishu/errors.ts` | CardKit 错误分类 |
 | `feishu/unavailable-guard.ts` | 已撤回消息 TTL 守卫，避免重复投递 |
@@ -71,7 +71,7 @@ CardKit 错误码：`300305` 元素超限（裁剪面板重试）· `300309` 流
 | `model-registry.ts` | `/model` 解析与列表 |
 | `monitoring/` | 指标收集、doctor、配置重载 |
 | `cardkit/` | Markdown 切分与元素 limits |
-| `clarify/manager.ts` | `ask_feishu` 交互式澄清卡片 |
+| `clarify/manager.ts` (~105 行) | `ask_feishu` 澄清卡（CardKit v2：标题+选项列表+下拉框，见「已有知识」） |
 | `types.ts` | 核心类型定义（`FeishuConfig`/`InboundMessageContext`/`FooterConfig` 等），被大量模块 import |
 | `log.ts` | 统一日志（`debug`/`warn`/`error`，前缀 `[pi-feishu]`） |
 | `version.ts` | 版本常量（`PRODUCT_NAME`/`PRODUCT_VERSION`/`PRODUCT_ID`） |
@@ -101,7 +101,7 @@ Pi 不支持 `.tgz` 安装，只装目录或 git 源：
 # 装本地目录
 pi install ./path/to/pi-feishu-bridge
 
-# 或从 GitHub 装（master 即 3.0 主干）
+# 或从 GitHub 装（master 主干）
 pi install https://github.com/zxsctxx/pi-feishu-bridge
 pi install git:github.com/zxsctxx/pi-feishu-bridge@master
 # 注意：pi 的 git ref 分隔符是 `@`（如 @master），不是 `#`；`#master` 会被拼进 clone URL 导致安装失败
@@ -113,7 +113,7 @@ pi install git:github.com/zxsctxx/pi-feishu-bridge@master
 
 ### 飞书富文本（post）解析
 
-`feishu-client.ts` 的 `parsePostContent()` 负责解析飞书富文本消息。`content` 是二维数组（外层行、内层行内片段），**行之间必须补换行**，否则多行内容（如有序列表）会被压成一行。16 个测试覆盖有序列表、多行段落、链接/ @ 提及/图片、locale 回退、畸形数据。
+`feishu-client.ts` 的 `parsePostContent()` 负责解析飞书富文本消息。`content` 是二维数组（外层行、内层行内片段），**行之间必须补换行**，否则多行内容（如有序列表）会被压成一行。25 个测试覆盖有序列表、多行段落、链接/@ 提及/图片、`code`/`code_block`/`media`/`emotion`/`hr` 片段、locale 回退（含新版无 locale 结构 `content`/`content_v2`）、未知 tag 兜底保留文本、畸形数据。未知 tag 从「丢弃」改为「兜底保留 `text`」防内容静默丢失；空内容打日志便于排查无法入站的格式。
 
 ### 长内容截断与标注
 
@@ -126,6 +126,12 @@ pi install git:github.com/zxsctxx/pi-feishu-bridge@master
 
 相关 LIMITS：`maxReasoningChars`（默认 3500，上限 30000）、`maxToolDetailChars`（500/10000）、`maxToolOutputChars`（800/10000）——钳制表硬上限，无法彻底关闭截断。`card-renderer.test.ts` 覆盖三类截断标注与未超限不标注。
 
+### 澄清卡（CardKit v2 链路）
+
+`ask_feishu` 工具的澄清卡走 CardKit 原生链路（非静态消息卡）：`ClarifyTransport` 接口要求 `createCard`/`sendCardReference`/`batchUpdate`，**接线必须传 CardKit 客户端**（`index.ts` 的 `clarify = new ClarifyManager(client.createCardKitClient(metrics))`），**不能传 `FeishuClient`**——后者只有 `sendCard`/`updateCard`，运行时会报 `createCard is not a function`（3.1.0 修复过一次接线遗漏，根因是接口换了忘了换接线对象）。
+
+卡片结构（schema 2.0）：问题标题（`text_size: title_2`）+ `hr` 分隔 + A/B/C 选项列表（markdown，带 description 的 `**X. label** — desc`）+ 底部 `select_static` 下拉框（`value` 携带 `clarify_id`，选中经 `action.option` 回传）。收尾用 `batchUpdate` 两步：把问题元素改成 `✅ 已选择：**label**` + 删除下拉框元素（`sequence` 自增保证单调）。选项支持 `value`/`label`/`description` 结构化（`tools.ts` 的 `normalizeOptions` 兼容旧纯文本 `choices`）。`manager.test.ts` 用 mock transport 测 manager 本身，不覆盖 `index.ts` 接线层——接线正确性靠 typecheck 兜底。
+
 ### 3.0 重构记录
 
 2026-07-26 完成 3.0 重构（`refactor/3.0` 分支，后以 PR #1 合并进 master），7 个 commit + 基线测试。核心变更：
@@ -134,7 +140,7 @@ pi install git:github.com/zxsctxx/pi-feishu-bridge@master
 - **清理嫁接痕迹**：删除全部 snake_case 配置别名、死代码（`buildStreamingCard`/`buildFinalCard`/`PANEL_CONTENT_ELEMENT_ID` 等）、`monitoringEnabled`、`FeishuSettingsSection`。统一日志到 `src/log.ts`。
 - **拆分 `index.ts`**：1870 → 887 行。拆出 `config.ts`、`queue.ts`、`commands/`、`tools.ts`、`model-registry.ts`、`session/usage.ts`。
 - **边界钳制**：`LIMITS` 表统一管理所有数值配置的范围，`null` 配置值不再被误当作 0（`Number(null) === 0` 的 bug）。
-- **测试 30 → 118**，新增 `card-manager.test.ts`（16）、`queue.test.ts`（19）、`config.test.ts`（20）、`dispatch.test.ts`（9）、`usage.test.ts`（8）。
+- **测试 30 → 118**，新增 `card-manager.test.ts`（16）、`queue.test.ts`（19）、`config.test.ts`（20）、`dispatch.test.ts`（9）、`usage.test.ts`（8）。3.1.0 又增至 137：新增 `card-renderer.test.ts`（7）、`clarify/manager.test.ts`（3）、`post-content.test.ts` 增 9 例。
 
 3.0.0 修复的 5 个 bug：① `auto` 探测从未生效（`checkCardKitAvailability()` 失败时返回非空字符串，调用方 `if (!available)` 因 truthy 永远进不去，实际一直「直接建卡失败再降级」）；② 数值配置边界此前只存在于文档，无代码执行；③ `Number(null) === 0` 使 `null` 配置值被钳到 `min` 而非回落默认；④ 消息投递失败（媒体下载/sendUserMessage）被静默吞掉，现在会回复失败原因并释放队列；⑤ 排队判断遗漏流式状态，卡片收尾期间新消息会插队。
 
