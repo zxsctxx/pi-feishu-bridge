@@ -37,4 +37,4 @@
 - 每张卡最终处于 completed/failed/aborted/terminated 之一。
 - 失败有可见反馈，未授权用户不能控制 Pi。
 - WebSocket、媒体收发、Reaction 和三个主动发送工具相较 1.x 不退化。
-- 将全部证据填入 `docs/acceptance-checklist.md` 后才可发布。
+- 将全部证据（截图、Pi 日志、飞书消息链接）归档后才可发布。
