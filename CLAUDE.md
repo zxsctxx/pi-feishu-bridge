@@ -114,6 +114,17 @@ pi install git:github.com/zxsctxx/pi-feishu-bridge#master
 
 `feishu-client.ts` 的 `parsePostContent()` 负责解析飞书富文本消息。`content` 是二维数组（外层行、内层行内片段），**行之间必须补换行**，否则多行内容（如有序列表）会被压成一行。16 个测试覆盖有序列表、多行段落、链接/ @ 提及/图片、locale 回退、畸形数据。
 
+### 长内容截断与标注
+
+工具 detail / output 与推理正文按配置上限截断，截断后追加 `…（已截断，共 N 字）`（N = 传入渲染层的实际长度）。改动点在 `streaming/card-renderer.ts` 的 `truncate()`（第三参数 `annotate`，默认 `false`）：
+
+- **工具 detail / output**：存储层 `tool-tracker.ts` 的 `clip()` 在 `record` 时已按 500/800 截成一行（`formatToolDetail`/`formatToolOutput`），渲染层 `truncate` 是兑底二次截断，N 为裁剪后长度、流式期间固定。
+- **推理 thinking**：`card-session.ts` 存**全文原文**（`thinkingRounds`/`currentThinking` 不截断），渲染时 `truncate` 才裁，N 为真实原文字数，**流式期间随每次 flush 实时增长**；`maxThinkingRounds`/`maxToolSteps` 超限则折叠早期轮次/步骤（提示一行，不丢新内容）。
+- **答案正文**：不走截断，`card-manager.ts` 的 `flushAnswer()` 超 `maxAnswerElementChars` 时滚动分卡（`splitMarkdown` 拆卡 + 关流式 + 新建卡）。
+- 截断仅展示层：thinking 原文始终存全文，改配置可恢复完整展示。
+
+相关 LIMITS：`maxReasoningChars`（默认 3500，上限 30000）、`maxToolDetailChars`（500/10000）、`maxToolOutputChars`（800/10000）——钳制表硬上限，无法彻底关闭截断。`card-renderer.test.ts` 覆盖三类截断标注与未超限不标注。
+
 ### 3.0 重构记录
 
 2026-07-26 完成 3.0 重构（`refactor/3.0` 分支，后以 PR #1 合并进 master），7 个 commit + 基线测试。核心变更：

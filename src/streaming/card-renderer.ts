@@ -59,8 +59,10 @@ export const DEFAULT_TOOL_DETAIL_CHARS = 500;
 export const DEFAULT_TOOL_OUTPUT_CHARS = 800;
 export const DEFAULT_PRINT_FREQUENCY_MS = 70;
 
-const truncate = (text: string, limit: number) =>
-  text.length > limit ? `${text.slice(0, limit)}…` : text;
+const truncate = (text: string, limit: number, annotate = false) =>
+  text.length > limit
+    ? `${text.slice(0, limit)}…${annotate ? `（已截断，共 ${text.length} 字）` : ""}`
+    : text;
 
 const MD_SPECIAL = /([`*_{}\[\]<>])/g;
 
@@ -137,11 +139,11 @@ function buildToolElements(
   const out: Record<string, unknown>[] = [mdTitle(title, statusColor(step.status))];
 
   const detail = step.detail?.trim();
-  if (detail) out.push(plainIndented(truncate(detail, detailLimit)));
+  if (detail) out.push(plainIndented(truncate(detail, detailLimit, true)));
 
   // 输出已是人类可读一行；plain_text 避免再被当成 JSON 代码块
   const output = step.output?.trim();
-  if (output) out.push(plainIndented(truncate(output, outputLimit)));
+  if (output) out.push(plainIndented(truncate(output, outputLimit, true)));
   return out;
 }
 
@@ -154,7 +156,7 @@ function buildReasoningElements(
 ): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [mdTitle(`💭 推理 ${index}`)];
   if (showBody && text.trim()) {
-    out.push(mdIndented(truncate(text, reasoningLimit)));
+    out.push(mdIndented(truncate(text, reasoningLimit, true)));
   }
   return out;
 }
