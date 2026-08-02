@@ -136,7 +136,7 @@ pi install git:github.com/zxsctxx/pi-feishu-bridge@master
 - **边界钳制**：`LIMITS` 表统一管理所有数值配置的范围，`null` 配置值不再被误当作 0（`Number(null) === 0` 的 bug）。
 - **测试 30 → 118**，新增 `card-manager.test.ts`（16）、`queue.test.ts`（19）、`config.test.ts`（20）、`dispatch.test.ts`（9）、`usage.test.ts`（8）。
 
-修复的 5 个 bug 详见 `docs/releases/RELEASE_NOTES_v3.0.0.md`。
+3.0.0 修复的 5 个 bug：① `auto` 探测从未生效（`checkCardKitAvailability()` 失败时返回非空字符串，调用方 `if (!available)` 因 truthy 永远进不去，实际一直「直接建卡失败再降级」）；② 数值配置边界此前只存在于文档，无代码执行；③ `Number(null) === 0` 使 `null` 配置值被钳到 `min` 而非回落默认；④ 消息投递失败（媒体下载/sendUserMessage）被静默吞掉，现在会回复失败原因并释放队列；⑤ 排队判断遗漏流式状态，卡片收尾期间新消息会插队。
 
 ## 上游致谢
 
