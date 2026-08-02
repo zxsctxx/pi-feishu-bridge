@@ -2,7 +2,7 @@ import { warn } from "../log.js";
 
 export interface ClarifyTransport {
   createCard(card: Record<string, unknown>): Promise<string>;
-  sendCardReference(chatId: string, cardId: string, replyToMsgId?: string): Promise<string>;
+  sendCardReference(chatId: string, cardId: string): Promise<string>;
   batchUpdate(cardId: string, actions: unknown[], sequence: number): Promise<void>;
 }
 export interface ClarifyOption { value: string; label: string; description?: string; }
@@ -21,7 +21,7 @@ export class ClarifyManager {
   constructor(private readonly transport: ClarifyTransport) {}
   get hasPending(): boolean { return this.busy; }
 
-  async ask(chatId: string, question: string, options: ClarifyOption[], allowedOpenIds: string[], timeoutMs: number, signal?: AbortSignal, replyToMsgId?: string): Promise<string> {
+  async ask(chatId: string, question: string, options: ClarifyOption[], allowedOpenIds: string[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
     if (this.hasPending) throw new Error("已有一个等待中的飞书澄清请求");
     this.busy = true;
     const id = `clarify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -30,7 +30,7 @@ export class ClarifyManager {
     let messageId: string;
     try {
       cardId = await this.transport.createCard(card);
-      messageId = await this.transport.sendCardReference(chatId, cardId, replyToMsgId);
+      messageId = await this.transport.sendCardReference(chatId, cardId);
     } catch (error) {
       this.busy = false;
       throw error;
