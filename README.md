@@ -16,9 +16,17 @@
 
 ## 安装
 
+Pi 不支持 `.tgz` 安装，只装目录或 git 源：
+
 ```bash
-pi install ./pi-feishu-bridge-3.0.0.tgz
+# 装本地目录
+pi install ./path/to/pi-feishu-bridge
+
+# 或从 GitHub 装（master 即 3.0 主干）
+pi install git:github.com/zxsctxx/pi-feishu-bridge@master
 ```
+
+> 注意：pi 的 git ref 分隔符是 `@`（如 `@master`），不是 `#`；`#master` 会被拼进 clone URL 导致安装失败。
 
 从 2.x 升级请先看 [docs/migration-3.0.md](docs/migration-3.0.md) —— 配置键名有破坏性变更。
 

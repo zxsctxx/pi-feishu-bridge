@@ -6,7 +6,7 @@
 
 1. 安装 Node.js 20+ 和兼容版 Pi（`>=0.80.6 <0.82.0`，推荐 0.81.1），确认 `pi --version` 在范围内。
 2. 从本仓库执行 `npm ci && npm run typecheck && npm test && npm pack --dry-run`。
-3. 使用生成的 tarball 安装：`pi install ./pi-feishu-bridge-3.0.0.tgz`（版本以 `package.json` 为准），启动 Pi，确认扩展无加载错误。
+3. 安装扩展：`pi install git:github.com/zxsctxx/pi-feishu-bridge@master`（验证本地开发状态可改用 `pi install .` 注册当前仓库目录）。Pi 不支持 `.tgz` 安装，`npm pack` 产物仅用于发布内容检查。启动 Pi，确认扩展无加载错误。
 4. 创建飞书测试应用，按 `docs/permissions.md` 开通权限、事件和 CardKit，发布测试版本。
 5. 使用 allowlist 配置测试用户和 chat；准备第二个未授权账号。先运行 `/feishu doctor`，确认凭据、连接和安全警告符合预期。
 

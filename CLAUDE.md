@@ -103,7 +103,8 @@ pi install ./path/to/pi-feishu-bridge
 
 # 或从 GitHub 装（master 即 3.0 主干）
 pi install https://github.com/zxsctxx/pi-feishu-bridge
-pi install git:github.com/zxsctxx/pi-feishu-bridge#master
+pi install git:github.com/zxsctxx/pi-feishu-bridge@master
+# 注意：pi 的 git ref 分隔符是 `@`（如 @master），不是 `#`；`#master` 会被拼进 clone URL 导致安装失败
 ```
 
 安装后重启 Pi。`/feishu status` 确认版本。settings.json 中的 `feishu` 配置段不会被 `uninstall` 影响，但建议先备份。
