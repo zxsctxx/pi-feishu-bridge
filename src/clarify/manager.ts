@@ -7,7 +7,7 @@ export interface ClarifyTransport {
 }
 export interface ClarifyOption { value: string; label: string; description?: string; }
 export interface ClarifyAction { clarifyId: string; choice: string; senderOpenId: string; }
-interface Pending { id: string; cardId: string; messageId: string; options: ClarifyOption[]; allowedOpenIds: string[]; resolve: (choice: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean; }
+interface Pending { id: string; cardId: string; messageId: string; options: ClarifyOption[]; allowedOpenIds: string[]; resolve: (choice: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; signal?: AbortSignal; abortHandler?: () => void; settled: boolean; }
 
 /** 卡片问题元素 id（batchUpdate 定位更新目标） */
 const QUESTION_ELEMENT_ID = "question";
@@ -43,10 +43,19 @@ export class ClarifyManager {
     if (!messageId) { this.busy = false; throw new Error("澄清卡片发送失败"); }
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => { void this.finish("timeout", new Error("飞书澄清请求超时")); }, timeoutMs);
-      this.pending = { id, cardId, messageId, options, allowedOpenIds, resolve, reject, timer, settled: false };
+      const pending: Pending = { id, cardId, messageId, options, allowedOpenIds, resolve, reject, timer, settled: false };
+      this.pending = pending;
       // 发送期间信号可能已被取消：此时立即按取消收尾（更新卡片摘要 + 释放 busy），而非进入等待态
       if (signal?.aborted) { void this.finish("aborted", new Error("飞书澄清请求已取消")); return; }
-      signal?.addEventListener("abort", () => { void this.finish("aborted", new Error("飞书澄清请求已取消")); }, { once: true });
+      if (signal) {
+        const abortHandler = () => {
+          if (this.pending?.id !== id) return;
+          void this.finish("aborted", new Error("飞书澄清请求已取消"));
+        };
+        pending.signal = signal;
+        pending.abortHandler = abortHandler;
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
     });
   }
 
@@ -62,6 +71,7 @@ export class ClarifyManager {
 
   private async finish(status: "submitted" | "timeout" | "aborted", error?: Error, choice?: string, label?: string): Promise<void> {
     const pending = this.pending; if (!pending || pending.settled) return; pending.settled = true; clearTimeout(pending.timer);
+    if (pending.signal && pending.abortHandler) pending.signal.removeEventListener("abort", pending.abortHandler);
     const summary = status === "submitted" ? `✅ 已选择：**${label ?? choice}**` : status === "timeout" ? "⌛ 澄清请求已超时" : "已取消澄清请求";
     try {
       await this.transport.batchUpdate(pending.cardId, [

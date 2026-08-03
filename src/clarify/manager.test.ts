@@ -110,6 +110,48 @@ describe("ClarifyManager 卡片（schema 2.0 + 下拉框选择器）", () => {
     ]);
   });
 
+  it("每张新澄清卡的 sequence 都从 1 开始", async () => {
+    const transport = makeTransport();
+    const manager = new ClarifyManager(transport);
+
+    const first = manager.ask("chat-1", "第一问", options, [], 5000);
+    await tick();
+    const firstSelect = bodyElements(transport.pending.createCardCalls[0].card).find((element) => element.tag === "select_static");
+    await manager.handleAction({ clarifyId: firstSelect.value.clarify_id as string, choice: "A", senderOpenId: "" });
+    await first;
+
+    const second = manager.ask("chat-1", "第二问", options, [], 5000);
+    await tick();
+    const secondSelect = bodyElements(transport.pending.createCardCalls[1].card).find((element) => element.tag === "select_static");
+    await manager.handleAction({ clarifyId: secondSelect.value.clarify_id as string, choice: "B", senderOpenId: "" });
+    await second;
+
+    expect(transport.pending.batchUpdateCalls.map(({ sequence }) => sequence)).toEqual([1, 1]);
+  });
+
+  it("旧请求结束后 signal 再 abort 不影响新请求", async () => {
+    const transport = makeTransport();
+    const manager = new ClarifyManager(transport);
+    const firstController = new AbortController();
+    const first = manager.ask("chat-1", "第一问", options, [], 5000, firstController.signal);
+    await tick();
+    const firstSelect = bodyElements(transport.pending.createCardCalls[0].card).find((element) => element.tag === "select_static");
+    await manager.handleAction({ clarifyId: firstSelect.value.clarify_id as string, choice: "A", senderOpenId: "" });
+    await first;
+
+    const secondController = new AbortController();
+    const second = manager.ask("chat-1", "第二问", options, [], 5000, secondController.signal);
+    await tick();
+    firstController.abort();
+    await tick();
+    expect(manager.hasPending).toBe(true);
+
+    const secondSelect = bodyElements(transport.pending.createCardCalls[1].card).find((element) => element.tag === "select_static");
+    await manager.handleAction({ clarifyId: secondSelect.value.clarify_id as string, choice: "B", senderOpenId: "" });
+    await expect(second).resolves.toBe("B");
+    secondController.abort();
+  });
+
   it("发送前 signal 已 aborted：ask 拒绝、不建卡、不占用 busy", async () => {
     const transport = makeTransport();
     const manager = new ClarifyManager(transport);
