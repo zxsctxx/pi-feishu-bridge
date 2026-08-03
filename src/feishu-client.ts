@@ -112,59 +112,47 @@ export function parsePostContent(parsed: unknown, resources: InboundResource[]):
   if (Array.isArray(content)) {
     for (const row of content) {
       if (!Array.isArray(row)) continue;
-      const segments: string[] = [];
-      for (const elem of row as PostElement[]) {
-        switch (elem?.tag) {
-          case "text":
-          case "md":
-            if (elem.text) segments.push(elem.text);
-            break;
-          case "code":
-            // 行内代码：飞书客户端会把反引号内容转成该片段，缺失则整行内容丢失
-            if (elem.text) segments.push(elem.text);
-            break;
-          case "code_block":
-            // 代码块：保留语言与内容，输出 markdown 代码块语法
-            if (elem.text) {
-              const lang = elem.language ? elem.language + "\n" : "";
-              segments.push("```" + lang + elem.text + "\n```");
-            }
-            break;
-          case "a":
-            // 保留 URL，否则模型只看到锚文本无法访问链接
-            if (elem.href) segments.push(elem.text ? `[${elem.text}](${elem.href})` : elem.href);
-            else if (elem.text) segments.push(elem.text);
-            break;
-          case "at":
-            segments.push(`@${elem.user_name ?? elem.user_id ?? ""}`);
-            break;
-          case "img":
-            segments.push("[图片]");
-            if (elem.image_key) resources.push({ type: "image", fileKey: elem.image_key });
-            break;
-          case "media":
-            segments.push("[媒体]");
-            if (elem.file_key) resources.push({ type: "file", fileKey: elem.file_key });
-            break;
-          case "emotion":
-            segments.push("[表情]");
-            break;
-          case "hr":
-            // 水平分割线：保留分隔语义，避免该行被整体丢弃
-            segments.push("---");
-            break;
-          default:
-            // 未知 tag 兜底保留文本，防止内容静默丢失（与官方 SDK 一致）
-            if (elem.text) segments.push(elem.text);
-            break;
-        }
-      }
+      const segments = (row as PostElement[]).map((elem) => renderPostElement(elem, resources));
       lines.push(segments.join(""));
     }
   }
 
   // 保留行内空行（段落间隔），仅去掉首尾
   return lines.join("\n").replace(/^\n+|\n+$/g, "");
+}
+
+/** 渲染单个 post 片段为纯文本；副作用是把图片/媒体记入 resources */
+function renderPostElement(elem: PostElement | null | undefined, resources: InboundResource[]): string {
+  switch (elem?.tag) {
+    case "text":
+    case "md":
+    case "code":
+      // 行内代码：飞书客户端会把反引号内容转成该片段，缺失则整行内容丢失
+      return elem.text ?? "";
+    case "code_block":
+      // 代码块：保留语言与内容，输出 markdown 代码块语法
+      return elem.text ? "```" + (elem.language ? elem.language + "\n" : "") + elem.text + "\n```" : "";
+    case "a":
+      // 保留 URL，否则模型只看到锚文本无法访问链接
+      if (elem.href) return elem.text ? `[${elem.text}](${elem.href})` : elem.href;
+      return elem.text ?? "";
+    case "at":
+      return `@${elem.user_name ?? elem.user_id ?? ""}`;
+    case "img":
+      if (elem.image_key) resources.push({ type: "image", fileKey: elem.image_key });
+      return "[图片]";
+    case "media":
+      if (elem.file_key) resources.push({ type: "file", fileKey: elem.file_key });
+      return "[媒体]";
+    case "emotion":
+      return "[表情]";
+    case "hr":
+      // 水平分割线：保留分隔语义，避免该行被整体丢弃
+      return "---";
+    default:
+      // 未知 tag 或 null/undefined 元素：有文本则兜底保留，防止内容静默丢失（与官方 SDK 一致）
+      return elem?.text ?? "";
+  }
 }
 
 // ─── FeishuClient 类 ───────────────────────────────────

@@ -225,4 +225,17 @@ describe("locale 回退与边界", () => {
     });
     expect(text).toBe("正常");
   });
+
+  it("null/undefined 元素被跳过而不崩溃", () => {
+    // 畸形元素进入 default 分支，不能因访问 elem.text 抛错导致整条消息丢失
+    const { text } = parse(
+      post([[{ tag: "text", text: "正常" }, null, undefined, { tag: "未知类型", text: "兜底" }]]),
+    );
+    expect(text).toBe("正常兜底");
+  });
+
+  it("整行为 null/undefined 元素时被跳过而不崩溃", () => {
+    const { text } = parse(post([[null], [undefined], [{ tag: "text", text: "正常" }]]));
+    expect(text).toBe("正常");
+  });
 });

@@ -23,7 +23,12 @@ export class ClarifyManager {
 
   async ask(chatId: string, question: string, options: ClarifyOption[], allowedOpenIds: string[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
     if (this.hasPending) throw new Error("已有一个等待中的飞书澄清请求");
+    // 信号在发送前已取消：不占位、不建卡
+    if (signal?.aborted) throw new Error("飞书澄清请求已取消");
     this.busy = true;
+    // 每张澄清卡是独立的新卡片，sequence 从 0 重新计数（本卡首增后为 1），
+    // 避免跨卡共享实例级计数导致后续卡的 sequence 错位。澄清卡不共享 CardSession，无法走 session.nextSequence()
+    this.sequence = 0;
     const id = `clarify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const card = this.card(id, question, options);
     let cardId: string;
@@ -39,6 +44,8 @@ export class ClarifyManager {
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => { void this.finish("timeout", new Error("飞书澄清请求超时")); }, timeoutMs);
       this.pending = { id, cardId, messageId, options, allowedOpenIds, resolve, reject, timer, settled: false };
+      // 发送期间信号可能已被取消：此时立即按取消收尾（更新卡片摘要 + 释放 busy），而非进入等待态
+      if (signal?.aborted) { void this.finish("aborted", new Error("飞书澄清请求已取消")); return; }
       signal?.addEventListener("abort", () => { void this.finish("aborted", new Error("飞书澄清请求已取消")); }, { once: true });
     });
   }

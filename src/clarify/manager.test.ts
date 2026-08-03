@@ -109,4 +109,31 @@ describe("ClarifyManager 卡片（schema 2.0 + 下拉框选择器）", () => {
       },
     ]);
   });
+
+  it("发送前 signal 已 aborted：ask 拒绝、不建卡、不占用 busy", async () => {
+    const transport = makeTransport();
+    const manager = new ClarifyManager(transport);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(manager.ask("chat-1", "请选择", options, [], 5000, controller.signal))
+      .rejects.toThrow("飞书澄清请求已取消");
+    expect(manager.hasPending).toBe(false);
+    expect(transport.pending.createCardCalls).toHaveLength(0);
+  });
+
+  it("发送阶段被 abort：发送完成后立即按取消收尾并释放 busy", async () => {
+    const controller = new AbortController();
+    const transport = makeTransport();
+    const realCreate = transport.createCard;
+    transport.createCard = async (card) => {
+      controller.abort();
+      return realCreate(card);
+    };
+    const manager = new ClarifyManager(transport);
+    const promise = manager.ask("chat-1", "请选择", options, [], 5000, controller.signal);
+    await expect(promise).rejects.toThrow("飞书澄清请求已取消");
+    expect(manager.hasPending).toBe(false);
+    // 卡片已发出，收尾应更新其摘要（batchUpdate 被调用一次）
+    expect(transport.pending.batchUpdateCalls).toHaveLength(1);
+  });
 });
