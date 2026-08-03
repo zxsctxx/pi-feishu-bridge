@@ -72,12 +72,33 @@ function toolDisplayName(name: string): string {
 
 // ─── 扩展入口 ───────────────────────────────────────────
 
-/** newSession/reload 会拆掉旧扩展实例；用 globalThis 跨实例投递飞书回执 */
-type PendingFeishuNotify = { chatId: string; text: string; at: number };
+/** newSession/reload 会拆掉旧扩展实例；用 globalThis 跨实例更新飞书状态卡 */
+type PendingFeishuNotify = {
+  chatId: string;
+  text: string;
+  at: number;
+  statusMessageId?: string | null;
+};
 const PENDING_NOTIFY_KEY = "__piFeishuBridgePendingNotify";
 
 function setPendingFeishuNotify(notify: PendingFeishuNotify | null): void {
   (globalThis as Record<string, unknown>)[PENDING_NOTIFY_KEY] = notify;
+}
+
+async function deliverPendingFeishuNotify(
+  client: FeishuClient,
+  pending: PendingFeishuNotify,
+  text = pending.text,
+): Promise<void> {
+  if (pending.statusMessageId) {
+    try {
+      await client.updateTextCard(pending.statusMessageId, text);
+      return;
+    } catch (err) {
+      warn(`pending status card update failed: ${describeError(err)}`);
+    }
+  }
+  await client.sendMessage(pending.chatId, text);
 }
 
 function takePendingFeishuNotify(): PendingFeishuNotify | null {
@@ -457,8 +478,8 @@ export default function (pi: ExtensionAPI) {
         prepareSessionControl: () => prepareRemoteSessionControl(chatId),
         reloadConfig: async () => { config = loadConfig(); await startFeishuClient(); },
         flashStatus,
-        setPendingNotify: (notifyText: string) =>
-          setPendingFeishuNotify({ chatId, text: notifyText, at: Date.now() }),
+        setPendingNotify: (notifyText: string, statusMessageId?: string | null) =>
+          setPendingFeishuNotify({ chatId, text: notifyText, statusMessageId, at: Date.now() }),
         setPendingResumePath,
         clearTaskTimeout,
       },
@@ -580,7 +601,7 @@ export default function (pi: ExtensionAPI) {
           // 新会话未建立，旧实例仍存活，直接回执
           const pending = takePendingFeishuNotify();
           if (pending && client) {
-            await client.sendMessage(pending.chatId, "新建会话已取消（被扩展拦截）。");
+            await deliverPendingFeishuNotify(client, pending, "新建会话已取消（被扩展拦截）。");
           }
           ctx.ui.notify("飞书远程 /new 已取消", "warning");
           return;
@@ -590,7 +611,7 @@ export default function (pi: ExtensionAPI) {
         const pending = takePendingFeishuNotify();
         const detail = error instanceof Error ? error.message : String(error);
         if (pending && client) {
-          await client.sendMessage(pending.chatId, `新建会话失败：${detail}`);
+          await deliverPendingFeishuNotify(client, pending, `新建会话失败：${detail}`);
         }
         ctx.ui.notify(`飞书远程 /new 失败: ${detail}`, "error");
       }
@@ -604,7 +625,7 @@ export default function (pi: ExtensionAPI) {
       if (!sessionPath) {
         const pending = takePendingFeishuNotify();
         if (pending && client) {
-          await client.sendMessage(pending.chatId, "恢复会话失败：未指定会话路径。");
+          await deliverPendingFeishuNotify(client, pending, "恢复会话失败：未指定会话路径。");
         }
         ctx.ui.notify("飞书远程 /resume 缺少路径", "error");
         return;
@@ -618,7 +639,7 @@ export default function (pi: ExtensionAPI) {
         if (result.cancelled) {
           const pending = takePendingFeishuNotify();
           if (pending && client) {
-            await client.sendMessage(pending.chatId, "恢复会话已取消（被扩展拦截）。");
+            await deliverPendingFeishuNotify(client, pending, "恢复会话已取消（被扩展拦截）。");
           }
           ctx.ui.notify("飞书远程 /resume 已取消", "warning");
           return;
@@ -628,7 +649,7 @@ export default function (pi: ExtensionAPI) {
         const pending = takePendingFeishuNotify();
         const detail = error instanceof Error ? error.message : String(error);
         if (pending && client) {
-          await client.sendMessage(pending.chatId, `恢复会话失败：${detail}`);
+          await deliverPendingFeishuNotify(client, pending, `恢复会话失败：${detail}`);
         }
         ctx.ui.notify(`飞书远程 /resume 失败: ${detail}`, "error");
       }
@@ -650,7 +671,7 @@ export default function (pi: ExtensionAPI) {
         const pending = takePendingFeishuNotify();
         const detail = error instanceof Error ? error.message : String(error);
         if (pending && client) {
-          await client.sendMessage(pending.chatId, `热重载失败：${detail}`);
+          await deliverPendingFeishuNotify(client, pending, `热重载失败：${detail}`);
         }
         ctx.ui.notify(`飞书远程 /reload 失败: ${detail}`, "error");
       }
@@ -777,7 +798,7 @@ export default function (pi: ExtensionAPI) {
       if (Date.now() - pending.at < 120_000) {
         latestChatId = pending.chatId;
         try {
-          await client.sendMessage(pending.chatId, pending.text);
+          await deliverPendingFeishuNotify(client, pending);
         } catch (err) {
           warn(`pending notify failed: ${describeError(err)}`);
         }

@@ -420,6 +420,11 @@ export class FeishuClient {
     }
   }
 
+  /** 发送可复用的状态卡片，返回后续 PATCH 所需的消息 id */
+  async sendStatusCard(chatId: string, text: string, replyToMsgId?: string): Promise<string | null> {
+    return this.sendCard(chatId, FeishuClient.buildTextCard(text), replyToMsgId);
+  }
+
   /** 更新（PATCH）已有的卡片消息 */
   async updateCard(messageId: string, card: Record<string, unknown>): Promise<void> {
     const response = await this.client.im.message.patch({
@@ -427,6 +432,11 @@ export class FeishuClient {
       data: { content: JSON.stringify(card) },
     });
     this.ensureApiSuccess(response, "im.message.patch");
+  }
+
+  /** 更新状态卡片正文 */
+  async updateTextCard(messageId: string, text: string): Promise<void> {
+    await this.updateCard(messageId, FeishuClient.buildTextCard(text));
   }
 
   // ─── 媒体收发 ──────────────────────────────────────────

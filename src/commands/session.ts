@@ -31,8 +31,8 @@ export const newCommand: CommandHandler = {
   help: "新建会话（清空上下文）",
   async handle(ctx) {
     await ctx.prepareSessionControl();
-    ctx.setPendingNotify("已新建会话。先前上下文已清空，可继续对话。");
-    await ctx.client?.sendMessage(ctx.chatId, "正在新建会话…", ctx.msgId);
+    const statusMessageId = await ctx.client?.sendStatusCard(ctx.chatId, "正在新建会话…", ctx.msgId);
+    ctx.setPendingNotify("已新建会话。先前上下文已清空，可继续对话。", statusMessageId);
     // newSession 仅在命令上下文可用；经 followUp 触发内部命令
     ctx.pi.sendUserMessage(`/${CMD_FEISHU_SESSION_NEW}`, { deliverAs: "followUp" });
   },
@@ -43,10 +43,11 @@ export const reloadCommand: CommandHandler = {
   help: "热重载扩展/技能/主题（仅重载飞书配置用 /feishu config reload）",
   async handle(ctx) {
     await ctx.prepareSessionControl();
+    const statusMessageId = await ctx.client?.sendStatusCard(ctx.chatId, "正在热重载…", ctx.msgId);
     ctx.setPendingNotify(
       "已热重载扩展、技能、提示词、主题与上下文文件；飞书连接已恢复。\n（仅重载飞书配置请用 /feishu config reload）",
+      statusMessageId,
     );
-    await ctx.client?.sendMessage(ctx.chatId, "正在热重载…", ctx.msgId);
     ctx.pi.sendUserMessage(`/${CMD_FEISHU_RUNTIME_RELOAD}`, { deliverAs: "followUp" });
   },
 };
@@ -100,8 +101,8 @@ export const resumeCommand: CommandHandler = {
     const title = sessionDisplayTitle(resolved.session);
     await ctx.prepareSessionControl();
     ctx.setPendingResumePath(resolved.session.path);
-    ctx.setPendingNotify(`已恢复会话：${title}\n（${resolved.session.messageCount} 条消息）`);
-    await ctx.client?.sendMessage(ctx.chatId, `正在恢复会话：${title}…`, ctx.msgId);
+    const statusMessageId = await ctx.client?.sendStatusCard(ctx.chatId, `正在恢复会话：${title}…`, ctx.msgId);
+    ctx.setPendingNotify(`已恢复会话：${title}\n（${resolved.session.messageCount} 条消息）`, statusMessageId);
     ctx.pi.sendUserMessage(`/${CMD_FEISHU_SESSION_RESUME}`, { deliverAs: "followUp" });
   },
 };

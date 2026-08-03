@@ -52,17 +52,25 @@ export const compactCommand: CommandHandler = {
   async handle(ctx) {
     if (!ctx.ctx) return "无法执行：会话上下文不可用。";
 
-    // compact 是异步的，回调里要用当前 chat/msg 而非后续变化的值
+    // compact 是异步的，先建状态卡，再由回调更新同一张卡。
     const { client, chatId, msgId } = ctx;
+    const statusMessageId = await client?.sendStatusCard(chatId, "正在压缩上下文…", msgId);
+    const finish = async (text: string): Promise<void> => {
+      if (!client || !statusMessageId) {
+        await client?.sendMessage(chatId, text, msgId);
+        return;
+      }
+      try {
+        await client.updateTextCard(statusMessageId, text);
+      } catch {
+        // 原卡可能已撤回或过期，降级新发一张卡，避免结果静默丢失。
+        await client.sendMessage(chatId, text, msgId);
+      }
+    };
     ctx.ctx.compact({
-      onComplete: () => {
-        void client?.sendMessage(chatId, "上下文压缩已完成。", msgId);
-      },
-      onError: (error) => {
-        void client?.sendMessage(chatId, `上下文压缩失败：${describeError(error)}`, msgId);
-      },
+      onComplete: () => { void finish("上下文压缩已完成。"); },
+      onError: (error) => { void finish(`上下文压缩失败：${describeError(error)}`); },
     });
-    return "已触发上下文压缩…";
   },
 };
 

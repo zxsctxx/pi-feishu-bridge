@@ -39,7 +39,7 @@ export interface CommandContext {
   /** 短暂在状态栏闪一条提示 */
   flashStatus(text: string): void;
   /** 记录待投递的跨实例回执（newSession/reload 会拆掉当前实例） */
-  setPendingNotify(text: string): void;
+  setPendingNotify(text: string, statusMessageId?: string | null): void;
   /** 记录待恢复的会话路径，供内部 resume 命令读取 */
   setPendingResumePath(path: string): void;
   /** 取消当前任务的硬超时 */

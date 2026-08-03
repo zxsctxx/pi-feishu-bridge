@@ -22,6 +22,13 @@ function deps(overrides: Partial<CommandDeps> = {}) {
     sendMessage: async (chatId: string, text: string, replyTo?: string) => {
       sent.push({ chatId, text, replyTo });
     },
+    sendStatusCard: async (chatId: string, text: string, replyTo?: string) => {
+      sent.push({ chatId, text, replyTo });
+      return "status-card-1";
+    },
+    updateTextCard: async (_messageId: string, text: string) => {
+      sent.push({ chatId: "updated", text });
+    },
     getStatus: () => "connected" as const,
     stopTyping: async () => {},
     checkCardKitAvailability: async () => true as const,
@@ -114,6 +121,24 @@ describe("回复与参数", () => {
     const { deps: d, sent } = deps({ ctx: null });
     await dispatchCommand(d, "oc_a", "om_1", "/session");
     expect(sent[0].text).toContain("会话上下文不可用");
+  });
+});
+
+describe("状态卡片", () => {
+  it("/compact 在同一张卡片上更新完成状态", async () => {
+    let onComplete: (() => void) | undefined;
+    const { deps: d, sent } = deps({
+      ctx: {
+        compact: (callbacks: { onComplete: () => void }) => { onComplete = callbacks.onComplete; },
+      } as unknown as CommandDeps["ctx"],
+    });
+
+    await dispatchCommand(d, "oc_a", "om_1", "/compact");
+    expect(sent[0].text).toBe("正在压缩上下文…");
+    onComplete?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sent.at(-1)?.text).toBe("上下文压缩已完成。");
+    expect(sent).toHaveLength(2);
   });
 });
 
